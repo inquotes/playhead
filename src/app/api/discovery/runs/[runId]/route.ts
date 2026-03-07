@@ -6,9 +6,10 @@ type Params = {
   params: Promise<{ runId: string }>;
 };
 
-export async function GET(_: Request, context: Params) {
+export async function GET(request: Request, context: Params) {
   try {
     const { runId } = await context.params;
+    const includeEvents = new URL(request.url).searchParams.get("includeEvents") === "1";
     const session = await getOrCreateVisitorSession();
 
     const run = await prisma.agentRun.findFirst({
@@ -16,17 +17,19 @@ export async function GET(_: Request, context: Params) {
         id: runId,
         visitorSessionId: session.sessionId,
       },
-      include: {
-        events: {
-          orderBy: { seq: "asc" },
-        },
-      },
     });
 
     if (!run) {
       const response = NextResponse.json({ ok: false, message: "Run not found." }, { status: 404 });
       return attachVisitorCookie(response, session);
     }
+
+    const events = includeEvents
+      ? await prisma.agentRunEvent.findMany({
+          where: { runId },
+          orderBy: { seq: "asc" },
+        })
+      : [];
 
     const response = NextResponse.json({
       ok: true,
@@ -44,7 +47,7 @@ export async function GET(_: Request, context: Params) {
         startedAt: run.startedAt,
         completedAt: run.completedAt,
       },
-      events: run.events.map((event) => ({
+      events: events.map((event) => ({
         seq: event.seq,
         type: event.type,
         payload: event.payloadJson,

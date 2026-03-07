@@ -109,7 +109,6 @@ export function DiscoveryApp() {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
-  const [notablePatterns, setNotablePatterns] = useState<string[]>([]);
   const [strategyNote, setStrategyNote] = useState<string | null>(null);
   const [analysisTrace, setAnalysisTrace] = useState<AgentTrace | null>(null);
   const [recommendationTrace, setRecommendationTrace] = useState<AgentTrace | null>(null);
@@ -188,7 +187,6 @@ export function DiscoveryApp() {
       setLanes([]);
       setSelectedLaneId(null);
       setAnalysisSummary(null);
-      setNotablePatterns([]);
       setStrategyNote(null);
       setAnalysisTrace(null);
       setRecommendationTrace(null);
@@ -229,7 +227,6 @@ export function DiscoveryApp() {
       setLanes(nextLanes);
       setSelectedLaneId(nextLanes[0]?.id ?? null);
       setAnalysisSummary((data as { summary?: string }).summary ?? null);
-      setNotablePatterns((data as { notablePatterns?: string[] }).notablePatterns ?? []);
       setAnalysisTrace(data.trace ?? null);
       setProgress(100);
       setTimeout(() => setView("clusters"), 300);
@@ -351,7 +348,7 @@ export function DiscoveryApp() {
             reject(error instanceof Error ? error : new Error("Failed to fetch run status."));
           }
         }
-      }, 1200);
+      }, 5000);
     });
   }
 
@@ -476,13 +473,6 @@ export function DiscoveryApp() {
             <h2>{username}&apos;s Listening Clusters</h2>
             <p className="mp-muted">We identified {lanes.length} patterns in your listening history.</p>
             {analysisSummary && <p className="mp-summary">{analysisSummary}</p>}
-            {notablePatterns.length > 0 && (
-              <ul className="mp-notes">
-                {notablePatterns.map((note) => (
-                  <li key={note}>{note}</li>
-                ))}
-              </ul>
-            )}
             {analysisTrace && (
               <details className="mp-trace">
                 <summary>
@@ -530,11 +520,15 @@ export function DiscoveryApp() {
 
             <div className="mp-block">
               <p className="mp-kicker">ARTISTS YOU KNOW</p>
-              <div className="mp-tag-wrap">
-                {selectedLane.artists.map((artist) => (
-                  <span key={artist} className="mp-tag">{artist}</span>
-                ))}
-              </div>
+              {selectedLane.artists.length > 0 ? (
+                <div className="mp-tag-wrap">
+                  {selectedLane.artists.map((artist) => (
+                    <span key={artist} className="mp-tag">{artist}</span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mp-muted">No clearly matched known artists for this lane yet. Try rerunning analysis.</p>
+              )}
             </div>
 
             <div className="mp-divider" />

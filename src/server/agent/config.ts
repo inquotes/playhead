@@ -1,5 +1,7 @@
 const DEFAULT_TIMEOUT_MS = 240_000;
 const DEFAULT_MAX_TOOL_CALLS = 10;
+const DEFAULT_MAX_TURNS_ANALYZE = 5;
+const DEFAULT_MAX_TURNS_RECOMMEND = 4;
 
 function readInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -25,4 +27,15 @@ export function getAgentTimeoutMs(mode: "analyze" | "recommend"): number {
   }
 
   return readInt(process.env.AGENT_RECOMMEND_TIMEOUT_MS, globalTimeout);
+}
+
+export function getAgentMaxTurns(mode: "analyze" | "recommend"): number {
+  const globalDefault = mode === "analyze" ? DEFAULT_MAX_TURNS_ANALYZE : DEFAULT_MAX_TURNS_RECOMMEND;
+  const globalCap = readInt(process.env.AGENT_MAX_TURNS, globalDefault);
+
+  if (mode === "analyze") {
+    return readInt(process.env.AGENT_ANALYZE_MAX_TURNS, globalCap);
+  }
+
+  return readInt(process.env.AGENT_RECOMMEND_MAX_TURNS, globalCap);
 }

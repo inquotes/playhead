@@ -11,12 +11,12 @@ import {
 } from "@/server/agent/schemas";
 import {
   buildOpenAiTools,
-  executeMappedTool,
+  executeAgentTool,
   FINAL_ANALYZE_TOOL_NAME,
   FINAL_RECOMMEND_TOOL_NAME,
-  getMappedMcpTools,
+  getAgentToolDefinitions,
 } from "@/server/agent/tool-registry";
-import { parseMcpToolResult } from "@/server/agent/tool-parsers";
+import { getAgentMaxTurns } from "@/server/agent/config";
 
 type AgentMode = "analyze" | "recommend";
 
@@ -30,7 +30,13 @@ type AgentEvent = {
 type AgentTrace = {
   toolCallsUsed: number;
   maxToolCalls: number;
+  maxTurns: number;
   terminationReason: AgentTerminationReason;
+  metrics: {
+    modelTurns: number;
+    modelTimeMs: number;
+    toolTimeMs: number;
+  };
   steps: AgentTraceStep[];
 };
 
@@ -133,6 +139,38 @@ function parseToolArgs(argsRaw: string | null | undefined): Record<string, unkno
   } catch {
     return {};
   }
+}
+
+function compactValue(value: unknown, depth = 0): unknown {
+  if (depth > 3) return "[truncated]";
+
+  if (typeof value === "string") {
+    return value.length > 240 ? `${value.slice(0, 240)}...` : value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const maxItems = 12;
+    const compacted = value.slice(0, maxItems).map((item) => compactValue(item, depth + 1));
+    if (value.length > maxItems) {
+      compacted.push(`...${value.length - maxItems} more`);
+    }
+    return compacted;
+  }
+
+  if (typeof value === "object" && value) {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 16);
+    const compacted: Record<string, unknown> = {};
+    for (const [key, nested] of entries) {
+      compacted[key] = compactValue(nested, depth + 1);
+    }
+    return compacted;
+  }
+
+  return String(value);
 }
 
 function buildFinalTool(mode: AgentMode): ChatCompletionTool {
@@ -355,14 +393,18 @@ async function runAgent(params: {
   onEvent?: (event: AgentEvent) => Promise<void> | void;
 }): Promise<AnalyzeAgentResult | RecommendAgentResult> {
   const client = getOpenAIClient();
-  const mappedTools = await getMappedMcpTools(params.mcpSessionId);
+  const toolDefinitions = getAgentToolDefinitions(params.mode);
+  const maxTurns = getAgentMaxTurns(params.mode);
   const tools = buildOpenAiTools({
-    mappedTools,
+    toolDefinitions,
     finalTool: buildFinalTool(params.mode),
   });
 
   const traceSteps: AgentTraceStep[] = [];
   let toolCallsUsed = 0;
+  let modelTurns = 0;
+  let modelTimeMs = 0;
+  let toolTimeMs = 0;
   const startedAt = Date.now();
 
   const emit = async (type: string, payload: Record<string, unknown>) => {
@@ -373,8 +415,22 @@ async function runAgent(params: {
   await emit("run_started", {
     mode: params.mode,
     maxToolCalls: params.maxToolCalls,
+    maxTurns,
     timeoutMs: params.timeoutMs,
     message: `Run started (${params.mode}) with max ${params.maxToolCalls} tool calls and ${Math.round(params.timeoutMs / 1000)}s timeout.`,
+  });
+
+  const buildTrace = (terminationReason: AgentTerminationReason): AgentTrace => ({
+    toolCallsUsed,
+    maxToolCalls: params.maxToolCalls,
+    maxTurns,
+    terminationReason,
+    metrics: {
+      modelTurns,
+      modelTimeMs,
+      toolTimeMs,
+    },
+    steps: traceSteps,
   });
 
   const messages: ChatCompletionMessageParam[] = [
@@ -382,7 +438,7 @@ async function runAgent(params: {
     { role: "user", content: params.contextJson },
   ];
 
-  for (let iteration = 0; iteration < 20; iteration += 1) {
+  for (let iteration = 0; iteration < maxTurns; iteration += 1) {
     if (Date.now() - startedAt > params.timeoutMs) {
       await emit("run_timeout", {
         mode: params.mode,
@@ -400,12 +456,7 @@ async function runAgent(params: {
       return {
         mode: params.mode,
         output: fallback as AnalyzeFinal & RecommendFinal,
-        trace: {
-          toolCallsUsed,
-          maxToolCalls: params.maxToolCalls,
-          terminationReason: "timeout",
-          steps: traceSteps,
-        },
+        trace: buildTrace("timeout"),
       } as AnalyzeAgentResult | RecommendAgentResult;
     }
 
@@ -416,12 +467,16 @@ async function runAgent(params: {
       message: `Model turn ${iteration + 1} started.`,
     });
 
+    const modelTurnStartedAt = Date.now();
     const completion = await client.chat.completions.create({
       model: getOpenAIModel(),
       tools,
       tool_choice: "auto",
       messages,
     });
+    const modelDurationMs = Date.now() - modelTurnStartedAt;
+    modelTurns += 1;
+    modelTimeMs += modelDurationMs;
 
     const message = completion.choices[0]?.message;
     if (!message) {
@@ -438,6 +493,7 @@ async function runAgent(params: {
     await emit("model_turn_completed", {
       mode: params.mode,
       iteration: iteration + 1,
+      durationMs: modelDurationMs,
       requestedToolCalls: toolCalls.length,
       message: `Model turn ${iteration + 1} planned ${toolCalls.length} tool call${toolCalls.length === 1 ? "" : "s"}.`,
     });
@@ -477,7 +533,7 @@ async function runAgent(params: {
           arguments: args,
           toolCallIndexInTurn: idx + 1,
           plannedToolCallsInTurn: toolCalls.length,
-          message: `Tool call ${idx + 1}/${toolCalls.length} started: ${call.function.name.replace(/^mcp_/, "")}.`,
+          message: `Tool call ${idx + 1}/${toolCalls.length} started: ${call.function.name}.`,
         });
 
       const isFinal =
@@ -507,12 +563,7 @@ async function runAgent(params: {
         return {
           mode: params.mode,
           output: validated as AnalyzeFinal & RecommendFinal,
-          trace: {
-            toolCallsUsed,
-            maxToolCalls: params.maxToolCalls,
-            terminationReason: "final",
-            steps: traceSteps,
-          },
+          trace: buildTrace("final"),
         } as AnalyzeAgentResult | RecommendAgentResult;
       }
 
@@ -542,49 +593,45 @@ async function runAgent(params: {
           reason: "budget_exhausted",
           toolCallsUsed,
           maxToolCalls: params.maxToolCalls,
-          message: `Skipped ${call.function.name.replace(/^mcp_/, "")}: global tool budget exhausted (${toolCallsUsed}/${params.maxToolCalls}).`,
+          message: `Skipped ${call.function.name}: global tool budget exhausted (${toolCallsUsed}/${params.maxToolCalls}).`,
         });
         continue;
       }
 
       const toolStart = Date.now();
       try {
-        const mappedTool = mappedTools.find((tool) => tool.openAiName === call.function.name);
-        if (!mappedTool) {
-          throw new Error(`Unknown mapped MCP tool: ${call.function.name}`);
-        }
-
-        const result = await executeMappedTool({
+        const result = await executeAgentTool({
           mcpSessionId: params.mcpSessionId,
-          mappedTools,
-          openAiName: call.function.name,
+          toolDefinitions,
+          toolName: call.function.name,
           argumentsObject: args,
         });
 
+        const toolDurationMs = Date.now() - toolStart;
+        toolTimeMs += toolDurationMs;
         toolCallsUsed += 1;
         traceSteps.push({
           index: traceSteps.length + 1,
           toolName: call.function.name,
           arguments: args,
           status: "success",
-          durationMs: Date.now() - toolStart,
-          preview: result.text.slice(0, 220),
+          durationMs: toolDurationMs,
+          preview:
+            result.text.slice(0, 220) ||
+            JSON.stringify(compactValue(result.parsed)).slice(0, 220) ||
+            "Tool completed.",
         });
 
-        const parsed = parseMcpToolResult({
-          mcpToolName: mappedTool.mcpName,
-          text: result.text,
-          args,
-        });
+        const compactParsed = compactValue(result.parsed);
 
         messages.push({
           role: "tool",
           tool_call_id: call.id,
           content: JSON.stringify({
             ok: true,
-            mcpTool: mappedTool.mcpName,
-            text: result.text.slice(0, 8000),
-            parsed,
+            tool: call.function.name,
+            parsed: compactParsed,
+            note: result.text.slice(0, 320),
           }),
         });
 
@@ -592,20 +639,21 @@ async function runAgent(params: {
           mode: params.mode,
           toolName: call.function.name,
           status: "success",
-          durationMs: Date.now() - toolStart,
+          durationMs: toolDurationMs,
           toolCallsUsed,
           maxToolCalls: params.maxToolCalls,
           toolCallIndexInTurn: idx + 1,
           plannedToolCallsInTurn: toolCalls.length,
-          message: `Tool call ${idx + 1}/${toolCalls.length} completed: ${call.function.name.replace(/^mcp_/, "")} (${Date.now() - toolStart}ms).`,
+          message: `Tool call ${idx + 1}/${toolCalls.length} completed: ${call.function.name} (${toolDurationMs}ms).`,
         });
       } catch (error) {
+        const toolDurationMs = Date.now() - toolStart;
         traceSteps.push({
           index: traceSteps.length + 1,
           toolName: call.function.name,
           arguments: args,
           status: "error",
-          durationMs: Date.now() - toolStart,
+          durationMs: toolDurationMs,
           preview: error instanceof Error ? error.message.slice(0, 220) : "Unknown tool error",
         });
 
@@ -622,13 +670,13 @@ async function runAgent(params: {
           mode: params.mode,
           toolName: call.function.name,
           status: "error",
-          durationMs: Date.now() - toolStart,
+          durationMs: toolDurationMs,
           error: error instanceof Error ? error.message : "Unknown tool error",
           toolCallsUsed,
           maxToolCalls: params.maxToolCalls,
           toolCallIndexInTurn: idx + 1,
           plannedToolCallsInTurn: toolCalls.length,
-          message: `Tool call ${idx + 1}/${toolCalls.length} failed: ${call.function.name.replace(/^mcp_/, "")}.`,
+          message: `Tool call ${idx + 1}/${toolCalls.length} failed: ${call.function.name}.`,
         });
       }
     }
@@ -650,15 +698,17 @@ async function runAgent(params: {
       return {
         mode: params.mode,
         output: fallback as AnalyzeFinal & RecommendFinal,
-        trace: {
-          toolCallsUsed,
-          maxToolCalls: params.maxToolCalls,
-          terminationReason: "budget_exhausted",
-          steps: traceSteps,
-        },
+        trace: buildTrace("budget_exhausted"),
       } as AnalyzeAgentResult | RecommendAgentResult;
     }
   }
+
+  await emit("run_turn_limit_reached", {
+    mode: params.mode,
+    maxTurns,
+    toolCallsUsed,
+    message: `Run reached model turn limit (${maxTurns}). Falling back to synthesis.`,
+  });
 
   const fallback = await fallbackSynthesis({
     mode: params.mode,
@@ -669,12 +719,7 @@ async function runAgent(params: {
   return {
     mode: params.mode,
     output: fallback as AnalyzeFinal & RecommendFinal,
-    trace: {
-      toolCallsUsed,
-      maxToolCalls: params.maxToolCalls,
-      terminationReason: "error",
-      steps: traceSteps,
-    },
+    trace: buildTrace("error"),
   } as AnalyzeAgentResult | RecommendAgentResult;
 }
 

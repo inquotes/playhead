@@ -18,52 +18,75 @@ function enrichAnalyzeLanesWithPlayTotals(
   topArtists: Array<{ artist: string; plays: number }>,
 ): ReturnType<typeof coerceLaneIds> {
   const playMap = new Map(topArtists.map((item) => [normalizeArtist(item.artist), item.plays]));
-  const rankedArtists = topArtists.map((item) => item.artist);
 
-  return lanes.map((lane, index) => {
-    const laneArtists = lane.artists
+  return lanes.map((lane) => {
+    const knownLaneArtists = lane.artists
       .map((name) => name.trim())
       .filter((name) => name.length > 0 && !/^unknown artist/i.test(name))
       .filter((name) => playMap.has(normalizeArtist(name)));
 
-    const fallbackArtists = rankedArtists.slice(index * 2, index * 2 + 3).filter(Boolean);
-    const artists = laneArtists.length >= 2 ? laneArtists : (laneArtists.length > 0 ? [...laneArtists, ...fallbackArtists].slice(0, 3) : fallbackArtists.slice(0, 3));
+    const contextText = [
+      lane.name,
+      lane.description,
+      lane.whyThisLane,
+      lane.tags.join(" "),
+      lane.evidence.join(" "),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    const contextualArtists = topArtists
+      .map((item) => item.artist)
+      .filter((artist) => contextText.includes(artist.toLowerCase()))
+      .slice(0, 4);
+
+    const artists = knownLaneArtists.length > 0 ? knownLaneArtists : contextualArtists;
 
     const totalFromMap = artists.reduce((sum, artist) => sum + (playMap.get(normalizeArtist(artist)) ?? 0), 0);
 
     return {
       ...lane,
-      artists: artists.length > 0 ? artists : lane.artists,
+      artists,
       totalPlays: totalFromMap > 0 ? totalFromMap : lane.totalPlays,
     };
   });
 }
 
-async function appendRunEvent(params: {
-  runId: string;
+type RunEventAppender = (event: {
   type: string;
   payload: Record<string, unknown>;
-}) {
-  const nextSeq = (await prisma.agentRunEvent.count({ where: { runId: params.runId } })) + 1;
-  const created = await prisma.agentRunEvent.create({
-    data: {
-      runId: params.runId,
-      seq: nextSeq,
-      type: params.type,
-      payloadJson: params.payload as Prisma.InputJsonValue,
-    },
-  });
+}) => Promise<void>;
 
-  publishAgentRunEvent({
-    runId: params.runId,
-    seq: created.seq,
-    type: created.type,
-    payload: params.payload,
-    createdAt: created.createdAt.toISOString(),
+async function createRunEventAppender(runId: string): Promise<RunEventAppender> {
+  const latest = await prisma.agentRunEvent.findFirst({
+    where: { runId },
+    orderBy: { seq: "desc" },
+    select: { seq: true },
   });
+  let nextSeq = (latest?.seq ?? 0) + 1;
+
+  return async ({ type, payload }) => {
+    const created = await prisma.agentRunEvent.create({
+      data: {
+        runId,
+        seq: nextSeq,
+        type,
+        payloadJson: payload as Prisma.InputJsonValue,
+      },
+    });
+    nextSeq += 1;
+
+    publishAgentRunEvent({
+      runId,
+      seq: created.seq,
+      type: created.type,
+      payload,
+      createdAt: created.createdAt.toISOString(),
+    });
+  };
 }
 
-async function markRunFailed(runId: string, message: string) {
+async function markRunFailed(runId: string, message: string, appendRunEvent: RunEventAppender) {
   await prisma.agentRun.update({
     where: { id: runId },
     data: {
@@ -75,7 +98,6 @@ async function markRunFailed(runId: string, message: string) {
   });
 
   await appendRunEvent({
-    runId,
     type: "run_failed",
     payload: { message: `Run failed: ${message}` },
   });
@@ -89,6 +111,8 @@ export async function launchAnalyzeRun(params: {
   from?: number;
   to?: number;
 }) {
+  const appendRunEvent = await createRunEventAppender(params.runId);
+
   try {
     await prisma.agentRun.update({
       where: { id: params.runId },
@@ -105,7 +129,6 @@ export async function launchAnalyzeRun(params: {
     });
 
     await appendRunEvent({
-      runId: params.runId,
       type: "analysis_seed_fetch_started",
       payload: {
         range,
@@ -122,7 +145,6 @@ export async function launchAnalyzeRun(params: {
     const heardArtistsSeed = [...new Set(topArtists.map((artist) => artist.artist.trim()))].slice(0, 200);
 
     await appendRunEvent({
-      runId: params.runId,
       type: "analysis_seed_fetch_completed",
       payload: {
         topArtistsCount: topArtists.length,
@@ -141,7 +163,7 @@ export async function launchAnalyzeRun(params: {
       heardArtistsSeed,
       maxToolCalls,
       timeoutMs,
-      onEvent: (event) => appendRunEvent({ runId: params.runId, type: event.type, payload: event.payload }),
+      onEvent: (event) => appendRunEvent({ type: event.type, payload: event.payload }),
     });
 
     const lanes = enrichAnalyzeLanesWithPlayTotals(coerceLaneIds(agentResult.output.lanes), topArtists);
@@ -192,7 +214,6 @@ export async function launchAnalyzeRun(params: {
     });
 
     await appendRunEvent({
-      runId: params.runId,
       type: "run_completed",
       payload: {
         analysisRunId: analysisRun.id,
@@ -203,6 +224,7 @@ export async function launchAnalyzeRun(params: {
     await markRunFailed(
       params.runId,
       error instanceof Error ? error.message : "Analyze run failed unexpectedly.",
+      appendRunEvent,
     );
   }
 }
@@ -242,6 +264,8 @@ export async function launchRecommendRun(params: {
   newPreferred: boolean;
   limit: number;
 }) {
+  const appendRunEvent = await createRunEventAppender(params.runId);
+
   try {
     await prisma.agentRun.update({
       where: { id: params.runId },
@@ -290,7 +314,7 @@ export async function launchRecommendRun(params: {
         limit: params.limit,
         maxToolCalls,
         timeoutMs,
-        onEvent: (event) => appendRunEvent({ runId: params.runId, type: event.type, payload: event.payload }),
+        onEvent: (event) => appendRunEvent({ type: event.type, payload: event.payload }),
       });
 
       recommendations = sanitizeRecommendations(
@@ -329,7 +353,6 @@ export async function launchRecommendRun(params: {
       };
 
       await appendRunEvent({
-        runId: params.runId,
         type: "fallback_recommender_used",
         payload: {
           reason: "invalid_agent_output_shape",
@@ -377,7 +400,6 @@ export async function launchRecommendRun(params: {
     });
 
     await appendRunEvent({
-      runId: params.runId,
       type: "run_completed",
       payload: {
         recommendationRunId: recommendationRun.id,
@@ -388,6 +410,7 @@ export async function launchRecommendRun(params: {
     await markRunFailed(
       params.runId,
       error instanceof Error ? error.message : "Recommend run failed unexpectedly.",
+      appendRunEvent,
     );
   }
 }

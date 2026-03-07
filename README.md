@@ -72,11 +72,14 @@ Open http://localhost:3000.
 
 - `AGENT_TIMEOUT_MS` (default `240000`)
 - `AGENT_MAX_TOOL_CALLS` (default `10`)
+- `AGENT_MAX_TURNS` (default analyze `5`, recommend `4`)
 - Optional per-mode overrides:
   - `AGENT_ANALYZE_TIMEOUT_MS`
   - `AGENT_RECOMMEND_TIMEOUT_MS`
   - `AGENT_ANALYZE_MAX_TOOL_CALLS`
   - `AGENT_RECOMMEND_MAX_TOOL_CALLS`
+  - `AGENT_ANALYZE_MAX_TURNS`
+  - `AGENT_RECOMMEND_MAX_TURNS`
 
 ## Key API routes
 
