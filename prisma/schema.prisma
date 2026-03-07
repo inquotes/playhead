@@ -1,0 +1,93 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model VisitorSession {
+  id                 String              @id
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  lastfmConnection   LastfmConnection?
+  analysisRuns       AnalysisRun[]
+  recommendationRuns RecommendationRun[]
+  agentRuns          AgentRun[]
+}
+
+model LastfmConnection {
+  id                 String         @id @default(cuid())
+  visitorSessionId   String         @unique
+  visitorSession     VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  mcpSessionId       String?
+  status             String         @default("disconnected")
+  lastfmUsername     String?
+  authErrorCode      String?
+  lastVerifiedAt     DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+}
+
+model AnalysisRun {
+  id                 String         @id @default(cuid())
+  visitorSessionId   String
+  visitorSession     VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  rangeStart         Int
+  rangeEnd           Int
+  sourceVersion      String
+  artistsJson        Json
+  tracksJson         Json
+  heardArtistsJson   Json
+  lanesJson          Json
+  createdAt          DateTime       @default(now())
+  recommendationRuns RecommendationRun[]
+}
+
+model RecommendationRun {
+  id               String         @id @default(cuid())
+  visitorSessionId String
+  visitorSession   VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  analysisRunId    String
+  analysisRun      AnalysisRun    @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  selectedLane     String
+  newOnly          Boolean        @default(false)
+  resultsJson      Json
+  createdAt        DateTime       @default(now())
+}
+
+model AgentRun {
+  id               String         @id @default(cuid())
+  visitorSessionId String
+  visitorSession   VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  mode             String
+  status           String         @default("queued")
+  requestJson      Json
+  resultJson       Json?
+  errorMessage     String?
+  toolCallsUsed    Int            @default(0)
+  maxToolCalls     Int            @default(10)
+  timeoutMs        Int
+  terminationReason String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  events           AgentRunEvent[]
+}
+
+model AgentRunEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  run       AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int
+  type      String
+  payloadJson Json
+  createdAt DateTime @default(now())
+
+  @@index([runId, seq])
+}
