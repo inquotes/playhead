@@ -26,37 +26,12 @@ type Recommendation = {
   reason: string;
   matchSource: string;
   tags: string[];
-  firstKnownYear: number | null;
-  isLikelyNewEra: boolean;
-};
-
-type AgentTraceStep = {
-  index: number;
-  toolName: string;
-  arguments: Record<string, unknown>;
-  status: "success" | "error" | "budget_skipped";
-  durationMs: number;
-  preview: string;
-};
-
-type AgentTrace = {
-  toolCallsUsed?: number;
-  maxToolCalls?: number;
-  terminationReason?: "final" | "budget_exhausted" | "timeout" | "error";
-  steps?: AgentTraceStep[];
-  pipeline?: string;
-  dataSource?: string;
-  candidateCount?: number;
 };
 
 type AgentRun = {
   id: string;
   mode: "analyze" | "recommend";
   status: "queued" | "running" | "completed" | "failed";
-  toolCallsUsed: number;
-  maxToolCalls: number;
-  timeoutMs: number;
-  terminationReason: string | null;
   result: unknown;
   errorMessage: string | null;
 };
@@ -71,19 +46,26 @@ type AgentLiveEvent = {
 type ViewState = "landing" | "time-select" | "analyzing" | "clusters" | "cluster-detail";
 
 const RANGE_OPTIONS = [
-  { id: "7d", label: "7 Days", desc: "Recent rotation" },
-  { id: "1m", label: "1 Month", desc: "Monthly patterns" },
-  { id: "6m", label: "6 Months", desc: "Seasonal taste" },
-  { id: "1y", label: "1 Year", desc: "Full portrait" },
-  { id: "summer2025", label: "Summer 2025", desc: "Jun-Aug 2025" },
+  { id: "7d", label: "Last 7 Days", desc: "Recent rotation" },
+  { id: "6m", label: "Last 6 Months", desc: "Seasonal taste" },
+  { id: "1y", label: "Last Year", desc: "Full portrait" },
+  { id: "custom", label: "Select Your Own Time Range", desc: "Month-level range" },
 ] as const;
 
-const STATUS_LINES = [
-  "Scanning your listening history...",
-  "Identifying taste clusters...",
-  "Mapping artist relationships...",
-  "Preparing new recommendations...",
-];
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
 
 type RangeOptionId = (typeof RANGE_OPTIONS)[number]["id"];
 
@@ -103,28 +85,122 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+function uniqueArtists(list: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const artist of list) {
+    const trimmed = artist.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(trimmed);
+  }
+  return unique;
+}
+
 export function DiscoveryApp() {
   const [view, setView] = useState<ViewState>("landing");
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [selectedRange, setSelectedRange] = useState<RangeOptionId>("6m");
+  const [customPhase, setCustomPhase] = useState<"start" | "end">("start");
+  const [customStartYear, setCustomStartYear] = useState<number | null>(null);
+  const [customStartMonth, setCustomStartMonth] = useState<number | null>(null);
+  const [customEndYear, setCustomEndYear] = useState<number | null>(null);
+  const [customEndMonth, setCustomEndMonth] = useState<number | null>(null);
   const [analysisRunId, setAnalysisRunId] = useState<string | null>(null);
+  const [analysisRangeLabel, setAnalysisRangeLabel] = useState<string | null>(null);
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
-  const [strategyNote, setStrategyNote] = useState<string | null>(null);
-  const [analysisTrace, setAnalysisTrace] = useState<AgentTrace | null>(null);
-  const [recommendationTrace, setRecommendationTrace] = useState<AgentTrace | null>(null);
-  const [newPreferred, setNewPreferred] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usernameInput, setUsernameInput] = useState("");
-  const [progress, setProgress] = useState(0);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<AgentLiveEvent[]>([]);
 
   const username = status?.lastfmUsername ?? "listener";
   const selectedLane = useMemo(() => lanes.find((lane) => lane.id === selectedLaneId) ?? null, [lanes, selectedLaneId]);
+
+  const currentYear = new Date().getUTCFullYear();
+  const yearOptions = useMemo(() => {
+    const years: number[] = [];
+    for (let year = currentYear; year >= 2000; year -= 1) {
+      years.push(year);
+    }
+    return years;
+  }, [currentYear]);
+
+  const customRangeIsValid = useMemo(() => {
+    if (!customStartYear || !customStartMonth || !customEndYear || !customEndMonth) return false;
+    const startKey = customStartYear * 100 + customStartMonth;
+    const endKey = customEndYear * 100 + customEndMonth;
+    return startKey <= endKey;
+  }, [customStartYear, customStartMonth, customEndYear, customEndMonth]);
+
+  const analyzeSteps = useMemo(() => {
+    const events = new Set(liveEvents.map((event) => event.type));
+    return [
+      {
+        id: "snapshot",
+        label: "Collecting listening history",
+        state: events.has("snapshot_completed") ? "done" : events.has("snapshot_started") ? "active" : "pending",
+      },
+      {
+        id: "lanes",
+        label: "Building taste lanes",
+        state: events.has("lane_synthesis_completed") ? "done" : events.has("lane_synthesis_started") ? "active" : "pending",
+      },
+      {
+        id: "finalize",
+        label: "Finalizing analysis",
+        state: events.has("run_completed") ? "done" : events.size > 0 ? "active" : "pending",
+      },
+    ] as const;
+  }, [liveEvents]);
+
+  const recommendSteps = useMemo(() => {
+    const events = new Set(liveEvents.map((event) => event.type));
+    return [
+      {
+        id: "context",
+        label: "Loading lane context",
+        state: events.has("recommendation_context_loaded") ? "done" : "pending",
+      },
+      {
+        id: "known-history",
+        label: "Scanning known listening history",
+        state:
+          events.has("recommendation_known_history_completed")
+            ? "done"
+            : events.has("recommendation_known_history_started")
+              ? "active"
+              : "pending",
+      },
+      {
+        id: "expand",
+        label: "Finding and ranking recommendations",
+        state:
+          events.has("recommendation_expansion_completed")
+            ? "done"
+            : events.has("recommendation_expansion_started")
+              ? "active"
+              : "pending",
+      },
+      {
+        id: "finalize",
+        label: "Finalizing recommendations",
+        state: events.has("run_completed") ? "done" : events.size > 0 ? "active" : "pending",
+      },
+    ] as const;
+  }, [liveEvents]);
+
+  const progress = useMemo(() => {
+    const steps = view === "analyzing" ? analyzeSteps : recommendSteps;
+    const doneCount = steps.filter((step) => step.state === "done").length;
+    return Math.round((doneCount / steps.length) * 100);
+  }, [analyzeSteps, recommendSteps, view]);
 
   useEffect(() => {
     void initialize();
@@ -137,9 +213,9 @@ export function DiscoveryApp() {
       setStatus(nextStatus);
       if (nextStatus.lastfmUsername) {
         setUsernameInput(nextStatus.lastfmUsername);
-      }
-      if (nextStatus.status === "connected") {
-        setView("time-select");
+        if (nextStatus.status === "connected") {
+          setView("time-select");
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to initialize.");
@@ -160,29 +236,7 @@ export function DiscoveryApp() {
         setView("time-select");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not connect Last.fm username.");
-      setBusy(false);
-      return;
-    }
-
-    setBusy(false);
-  }
-
-  async function verifyConnect() {
-    setBusy(true);
-    setError(null);
-    try {
-      await jsonFetch<{ ok: true }>("/api/lastfm/connect/verify", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/lastfm/connect/status");
-      setStatus(nextStatus);
-      if (nextStatus.status === "connected") {
-        setView("time-select");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not verify Last.fm login.");
+      setError(err instanceof Error ? err.message : "Could not validate this Last.fm username.");
     } finally {
       setBusy(false);
     }
@@ -198,12 +252,10 @@ export function DiscoveryApp() {
       });
       setStatus({ status: "disconnected", lastfmUsername: null, hasConnection: false, authErrorCode: null });
       setAnalysisRunId(null);
+      setAnalysisRangeLabel(null);
       setLanes([]);
       setSelectedLaneId(null);
       setAnalysisSummary(null);
-      setStrategyNote(null);
-      setAnalysisTrace(null);
-      setRecommendationTrace(null);
       setRecommendations([]);
       setView("landing");
     } catch (err) {
@@ -217,19 +269,27 @@ export function DiscoveryApp() {
     setView("analyzing");
     setBusy(true);
     setError(null);
-    setProgress(0);
-    setStrategyNote(null);
-    setRecommendationTrace(null);
     setRecommendations([]);
+    setLiveEvents([]);
 
-    const interval = window.setInterval(() => {
-      setProgress((p) => (p >= 92 ? p : p + 2));
-    }, 85);
+    let requestBody: { preset: RangeOptionId; from?: number; to?: number } = { preset: selectedRange };
+    if (selectedRange === "custom") {
+      if (!customRangeIsValid || !customStartYear || !customStartMonth || !customEndYear || !customEndMonth) {
+        setError("Please choose a valid start and end month.");
+        setView("time-select");
+        setBusy(false);
+        return;
+      }
+
+      const from = Math.floor(Date.UTC(customStartYear, customStartMonth - 1, 1, 0, 0, 0) / 1000);
+      const to = Math.floor(Date.UTC(customEndYear, customEndMonth, 0, 23, 59, 59) / 1000);
+      requestBody = { preset: "custom", from, to };
+    }
 
     try {
       const start = await jsonFetch<{ ok: true; runId: string }>("/api/discovery/analyze/start", {
         method: "POST",
-        body: JSON.stringify({ preset: selectedRange }),
+        body: JSON.stringify(requestBody),
       });
 
       setActiveRunId(start.runId);
@@ -237,18 +297,16 @@ export function DiscoveryApp() {
       const data = await waitForRunResult(start.runId);
 
       setAnalysisRunId(data.analysisRunId ?? null);
+      setAnalysisRangeLabel(data.range?.label ?? null);
       const nextLanes = data.lanes ?? [];
       setLanes(nextLanes);
       setSelectedLaneId(nextLanes[0]?.id ?? null);
-      setAnalysisSummary((data as { summary?: string }).summary ?? null);
-      setAnalysisTrace(data.trace ?? null);
-      setProgress(100);
-      setTimeout(() => setView("clusters"), 300);
+      setAnalysisSummary(data.summary ?? null);
+      setTimeout(() => setView("clusters"), 250);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed.");
       setView("time-select");
     } finally {
-      window.clearInterval(interval);
       setActiveRunId(null);
       setBusy(false);
     }
@@ -260,6 +318,7 @@ export function DiscoveryApp() {
     setBusy(true);
     setError(null);
     setRecommendations([]);
+    setLiveEvents([]);
 
     try {
       const start = await jsonFetch<{ ok: true; runId: string }>("/api/discovery/recommend/start", {
@@ -267,19 +326,13 @@ export function DiscoveryApp() {
         body: JSON.stringify({
           analysisRunId,
           laneId: selectedLaneId,
-          newPreferred,
-            limit: 4,
-          }),
-        });
+          limit: 4,
+        }),
+      });
 
       setActiveRunId(start.runId);
-      setLiveEvents([]);
-
       const data = await waitForRunResult(start.runId);
-
       setRecommendations(data.recommendations ?? []);
-      setStrategyNote(data.strategyNote ?? null);
-      setRecommendationTrace(data.trace ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate recommendations.");
     } finally {
@@ -295,13 +348,9 @@ export function DiscoveryApp() {
         const payload = JSON.parse((event as MessageEvent).data) as AgentLiveEvent;
         onEvent(payload);
       } catch {
-        // Ignore malformed event payload.
+        // ignore malformed payload
       }
     });
-
-    source.onerror = () => {
-      // Keep trying; EventSource auto-reconnects.
-    };
 
     return () => {
       source.close();
@@ -311,12 +360,10 @@ export function DiscoveryApp() {
   async function waitForRunResult(runId: string) {
     return new Promise<{
       analysisRunId?: string;
+      range?: { label?: string };
       lanes: Lane[];
       summary?: string;
-      notablePatterns?: string[];
-      trace?: AgentTrace;
       recommendations: Recommendation[];
-      strategyNote?: string;
     }>((resolve, reject) => {
       let settled = false;
       const seenSeq = new Set<number>();
@@ -340,12 +387,10 @@ export function DiscoveryApp() {
             finish();
             resolve((status.run.result ?? {}) as {
               analysisRunId?: string;
+              range?: { label?: string };
               lanes: Lane[];
               summary?: string;
-              notablePatterns?: string[];
-              trace?: AgentTrace;
               recommendations: Recommendation[];
-              strategyNote?: string;
             });
             return;
           }
@@ -353,7 +398,7 @@ export function DiscoveryApp() {
           if (status.run.status === "failed") {
             settled = true;
             finish();
-            reject(new Error(status.run.errorMessage ?? "Agent run failed."));
+            reject(new Error(status.run.errorMessage ?? "Run failed."));
           }
         } catch (error) {
           if (!settled) {
@@ -397,7 +442,7 @@ export function DiscoveryApp() {
           <section className="mp-landing-card">
             <p className="mp-kicker">LISTENING ANALYSIS CONSOLE</p>
             <h1>Discover artists you do not know yet.</h1>
-            <p>We build deterministic recommendations from your Last.fm history, then use AI only to label lanes and explain why picks fit.</p>
+            <p>Recommendations based on what you already love, optimized for what is missing from your history.</p>
             <div className="mp-actions-row">
               <input
                 className="mp-input"
@@ -408,10 +453,7 @@ export function DiscoveryApp() {
             </div>
             <div className="mp-actions-row">
               <button className="mp-button mp-button-primary" onClick={startConnect} disabled={busy || !usernameInput.trim()}>
-                Connect Username
-              </button>
-              <button className="mp-button mp-button-ghost" onClick={verifyConnect} disabled={busy}>
-                Re-verify
+                Begin
               </button>
             </div>
           </section>
@@ -426,7 +468,8 @@ export function DiscoveryApp() {
             </button>
             <p className="mp-kicker">SELECT LISTENING WINDOW</p>
             <h2>How far back should we look?</h2>
-            <p className="mp-muted">Longer windows reveal deeper patterns. Shorter windows show recent obsessions.</p>
+            <p className="mp-muted">Choose a listening window for lane analysis.</p>
+
             <div className="mp-range-grid">
               {RANGE_OPTIONS.map((range) => (
                 <button
@@ -439,8 +482,96 @@ export function DiscoveryApp() {
                 </button>
               ))}
             </div>
+
+            {selectedRange === "custom" && (
+              <section className="mp-custom-range">
+                <p className="mp-kicker">MONTH-LEVEL RANGE</p>
+                {customPhase === "start" ? (
+                  <>
+                    <p className="mp-muted">Pick your start month (earliest January 2000).</p>
+                    <div className="mp-custom-grid">
+                      <select className="mp-select" value={customStartYear ?? ""} onChange={(e) => setCustomStartYear(Number(e.target.value))}>
+                        <option value="">Start year</option>
+                        {yearOptions.map((year) => (
+                          <option key={`start-year-${year}`} value={year}>
+                            {year}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="mp-select"
+                        value={customStartMonth ?? ""}
+                        onChange={(e) => setCustomStartMonth(Number(e.target.value))}
+                        disabled={!customStartYear}
+                      >
+                        <option value="">Start month</option>
+                        {MONTHS.map((month, idx) => (
+                          <option key={`start-month-${month}`} value={idx + 1}>
+                            {month}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="mp-actions-row mp-actions-left">
+                      <button
+                        className="mp-button mp-button-ghost"
+                        onClick={() => {
+                          if (!customStartYear || !customStartMonth) return;
+                          setCustomEndYear(customStartYear);
+                          setCustomEndMonth(customStartMonth);
+                          setCustomPhase("end");
+                        }}
+                        disabled={!customStartYear || !customStartMonth}
+                      >
+                        Continue to end month
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="mp-muted">Now pick your end month. Range is inclusive by full month.</p>
+                    <div className="mp-custom-grid">
+                      <select className="mp-select" value={customEndYear ?? ""} onChange={(e) => setCustomEndYear(Number(e.target.value))}>
+                        <option value="">End year</option>
+                        {yearOptions.map((year) => (
+                          <option key={`end-year-${year}`} value={year}>
+                            {year}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="mp-select"
+                        value={customEndMonth ?? ""}
+                        onChange={(e) => setCustomEndMonth(Number(e.target.value))}
+                        disabled={!customEndYear}
+                      >
+                        <option value="">End month</option>
+                        {MONTHS.map((month, idx) => (
+                          <option key={`end-month-${month}`} value={idx + 1}>
+                            {month}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="mp-actions-row mp-actions-left">
+                      <button className="mp-button mp-button-ghost" onClick={() => setCustomPhase("start")}>
+                        Edit start month
+                      </button>
+                    </div>
+                    {!customRangeIsValid && customEndYear && customEndMonth && (
+                      <p className="mp-inline-error">End month must be after or equal to the start month.</p>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
+
             <div className="mp-center-cta">
-              <button className="mp-button mp-button-primary" onClick={runAnalysis} disabled={busy || status?.status !== "connected"}>
+              <button
+                className="mp-button mp-button-primary"
+                onClick={runAnalysis}
+                disabled={busy || status?.status !== "connected" || (selectedRange === "custom" && !customRangeIsValid)}
+              >
                 Analyze My Taste
               </button>
             </div>
@@ -452,33 +583,18 @@ export function DiscoveryApp() {
         <main className="mp-page mp-analyzing">
           <section className="mp-analyzing-card">
             <p className="mp-kicker mp-pulse">PROCESSING</p>
-            <h2>Analyzing {username}&apos;s listening DNA...</h2>
+            <h2>Analyzing {username}&apos;s listening history...</h2>
             <div className="mp-status-lines">
-              {STATUS_LINES.map((line, idx) => (
-                <div key={line} className="mp-status-line" style={{ animationDelay: `${idx * 0.5}s` }}>
+              {analyzeSteps.map((step) => (
+                <div key={step.id} className={`mp-status-line is-${step.state}`}>
                   <span />
-                  <p>{line}</p>
+                  <p>{step.label}</p>
                 </div>
               ))}
             </div>
             <div className="mp-progress-track">
               <div className="mp-progress-fill" style={{ width: `${progress}%` }} />
             </div>
-            {liveEvents.length > 0 && (
-              <details className="mp-trace" open>
-                <summary>Live Agent Activity ({liveEvents.length})</summary>
-                <div className="mp-trace-list">
-                  {liveEvents.slice(-8).map((event) => (
-                    <div key={`${event.seq}-${event.type}`} className="mp-trace-item">
-                      <strong>
-                        #{event.seq} {event.type}
-                      </strong>
-                      <p>{typeof event.payload.message === "string" ? event.payload.message : JSON.stringify(event.payload).slice(0, 170)}</p>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
           </section>
         </main>
       )}
@@ -491,16 +607,9 @@ export function DiscoveryApp() {
             </button>
             <p className="mp-kicker">TASTE ANALYSIS</p>
             <h2>{username}&apos;s Listening Clusters</h2>
-            <p className="mp-muted">We identified {lanes.length} patterns in your listening history.</p>
+            {analysisRangeLabel && <p className="mp-muted">Analysis based on listening activity from {analysisRangeLabel.toLowerCase()}.</p>}
             {analysisSummary && <p className="mp-summary">{analysisSummary}</p>}
-            {analysisTrace && (
-              <details className="mp-trace">
-                <summary>
-                  Run trace: {analysisTrace.pipeline ?? "pipeline"}
-                </summary>
-                <p className="mp-muted">Data source: {analysisTrace.dataSource ?? "official-lastfm-api"}</p>
-              </details>
-            )}
+
             <div className="mp-divider" />
             <div className="mp-cluster-list">
               {lanes.map((lane, idx) => (
@@ -508,9 +617,16 @@ export function DiscoveryApp() {
                   <div>
                     <p className="mp-kicker">CLUSTER {String(idx + 1).padStart(2, "0")}</p>
                     <h3>{lane.name}</h3>
-                    <small>{lane.artists.length} core artists · {lane.totalPlays} plays</small>
+                    <small>{uniqueArtists(lane.artists).length} core artists · {lane.totalPlays} plays</small>
                   </div>
                   <p>{lane.description}</p>
+                  <div className="mp-tag-wrap">
+                    {uniqueArtists(lane.artists).slice(0, 7).map((artist) => (
+                      <span key={`${lane.id}-${artist.toLowerCase()}`} className="mp-tag">
+                        {artist}
+                      </span>
+                    ))}
+                  </div>
                 </button>
               ))}
             </div>
@@ -521,21 +637,24 @@ export function DiscoveryApp() {
       {view === "cluster-detail" && selectedLane && (
         <main className="mp-detail-layout">
           <aside className="mp-detail-sidebar">
-            <button className="mp-back" onClick={() => setView("clusters")}>← All Clusters</button>
+            <button className="mp-back" onClick={() => setView("clusters")}>
+              ← All Clusters
+            </button>
             <h2>{selectedLane.name}</h2>
             <p className="mp-muted">{selectedLane.description}</p>
-            <p className="mp-lane-why">{selectedLane.whyThisLane}</p>
 
             <div className="mp-block">
-              <p className="mp-kicker">ARTISTS YOU KNOW</p>
-              {selectedLane.artists.length > 0 ? (
+              <p className="mp-kicker">CORE ARTISTS</p>
+              {uniqueArtists(selectedLane.artists).length > 0 ? (
                 <div className="mp-tag-wrap">
-                  {selectedLane.artists.map((artist) => (
-                    <span key={artist} className="mp-tag">{artist}</span>
+                  {uniqueArtists(selectedLane.artists).map((artist) => (
+                    <span key={`${selectedLane.id}-${artist.toLowerCase()}`} className="mp-tag">
+                      {artist}
+                    </span>
                   ))}
                 </div>
               ) : (
-                <p className="mp-muted">No clearly matched known artists for this lane yet. Try rerunning analysis.</p>
+                <p className="mp-muted">No clear lane artists found yet. Try rerunning analysis.</p>
               )}
             </div>
 
@@ -550,60 +669,39 @@ export function DiscoveryApp() {
                 <p className="mp-kicker">CORE TAGS</p>
                 <strong>{selectedLane.tags.slice(0, 2).join(" + ") || "n/a"}</strong>
               </div>
-              <div>
-                <p className="mp-kicker">AI CONFIDENCE</p>
-                <strong>{Math.round(selectedLane.confidence * 100)}%</strong>
-              </div>
             </div>
           </aside>
 
           <section className="mp-detail-main">
             <p className="mp-kicker">NEW FOR YOU</p>
             <h1>Recommended Artists</h1>
-            <p className="mp-muted">Artists that match this cluster but are not in your listening history yet.</p>
+            <p className="mp-muted">Artists that match this cluster and are still likely underexplored in your history.</p>
 
-            <label className="mp-checkbox-row">
-              <input type="checkbox" checked={newPreferred} onChange={(event) => setNewPreferred(event.target.checked)} />
-              <span>Prefer newer artists, but allow strong older gap-fills</span>
-            </label>
+            {!busy && recommendations.length === 0 && (
+              <div className="mp-center-cta mp-detail-cta">
+                <button className="mp-button mp-button-primary" onClick={runRecommendations}>
+                  Get Recommendations
+                </button>
+              </div>
+            )}
 
-            <div className="mp-actions-row">
-              <button className="mp-button mp-button-primary" onClick={runRecommendations} disabled={busy}>
-                {recommendations.length > 0 ? "Refresh Recommendations" : "Get Recommendations"}
-              </button>
-            </div>
-
-            {busy && activeRunId && liveEvents.length > 0 && (
-              <details className="mp-trace" open>
-                <summary>Live Agent Activity ({liveEvents.length})</summary>
-                <div className="mp-trace-list">
-                  {liveEvents.slice(-8).map((event) => (
-                    <div key={`${event.seq}-${event.type}`} className="mp-trace-item">
-                      <strong>
-                        #{event.seq} {event.type}
-                      </strong>
-                      <p>{typeof event.payload.message === "string" ? event.payload.message : JSON.stringify(event.payload).slice(0, 170)}</p>
+            {busy && activeRunId && (
+              <div className="mp-progress-block">
+                <p className="mp-kicker">BUILDING RECOMMENDATIONS</p>
+                <div className="mp-status-lines mp-status-compact">
+                  {recommendSteps.map((step) => (
+                    <div key={step.id} className={`mp-status-line is-${step.state}`}>
+                      <span />
+                      <p>{step.label}</p>
                     </div>
                   ))}
                 </div>
-              </details>
-            )}
-
-            {strategyNote && <p className="mp-summary">{strategyNote}</p>}
-
-            {recommendationTrace && (
-              <details className="mp-trace">
-                <summary>
-                  Run trace: {recommendationTrace.pipeline ?? "pipeline"}
-                </summary>
-                <p className="mp-muted">Candidate pool size: {recommendationTrace.candidateCount ?? "n/a"}</p>
-              </details>
+              </div>
             )}
 
             <div className="mp-rec-grid">
               {recommendations.map((rec, idx) => (
                 <article key={rec.artist} className={`mp-rec-card ${idx === 0 ? "is-featured" : ""}`}>
-                  <span className="mp-chip">{rec.firstKnownYear ? `Since ${rec.firstKnownYear}` : "Lane Match"}</span>
                   <h3>{rec.artist}</h3>
                   <p>{rec.reason}</p>
                   <small>Seeded from {rec.matchSource}</small>

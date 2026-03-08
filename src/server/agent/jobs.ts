@@ -5,9 +5,11 @@ import { type RangePreset, resolveRange } from "@/server/discovery/range";
 import {
   buildListeningSnapshot,
   generateDeterministicRecommendations,
+  laneToContext,
   synthesizeTasteLanes,
 } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
+import { getKnownArtists } from "@/server/lastfm/service";
 
 type RunEventAppender = (event: {
   type: string;
@@ -207,7 +209,6 @@ export async function launchRecommendRun(params: {
   username: string;
   analysisRunId: string;
   laneId: string;
-  newPreferred: boolean;
   limit: number;
 }) {
   const appendRunEvent = await createRunEventAppender(params.runId);
@@ -243,21 +244,30 @@ export async function launchRecommendRun(params: {
     }
 
     await appendRunEvent({
-      type: "recommendation_snapshot_started",
+      type: "recommendation_context_loaded",
       payload: {
-        message: "Refreshing cached listening snapshot before deterministic recommendation expansion.",
+        message: "Loading lane context from your analysis.",
       },
     });
 
-    const snapshot = await buildListeningSnapshot({
-      username: params.username,
-      timeWindow: {
-        preset: "custom",
-        from: analysisRun.rangeStart,
-        to: analysisRun.rangeEnd,
-        label: "Selected analysis window",
+    await appendRunEvent({
+      type: "recommendation_known_history_started",
+      payload: {
+        message: "Scanning your known listening history for new-to-you filtering.",
       },
     });
+
+    const knownArtists = await getKnownArtists({ username: params.username });
+
+    await appendRunEvent({
+      type: "recommendation_known_history_completed",
+      payload: {
+        knownArtistCount: knownArtists.length,
+        message: `Known-history scan ready (${knownArtists.length} artists).`,
+      },
+    });
+
+    const laneContext = laneToContext(selectedLane);
 
     await appendRunEvent({
       type: "recommendation_expansion_started",
@@ -270,10 +280,9 @@ export async function launchRecommendRun(params: {
 
     const recommendationResult = await generateDeterministicRecommendations({
       username: params.username,
-      lane: selectedLane,
-      snapshot,
+      laneContext,
+      knownArtists,
       limit: params.limit,
-      newPreferred: params.newPreferred,
     });
 
     await appendRunEvent({
@@ -299,7 +308,7 @@ export async function launchRecommendRun(params: {
         visitorSessionId: params.visitorSessionId,
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
-        newOnly: params.newPreferred,
+        newOnly: true,
         resultsJson: {
           strategyNote: recommendationResult.strategyNote,
           recommendations: recommendationResult.recommendations,

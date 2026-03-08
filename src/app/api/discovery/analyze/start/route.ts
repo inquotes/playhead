@@ -6,7 +6,7 @@ import { launchAnalyzeRun } from "@/server/agent/jobs";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 const requestSchema = z.object({
-  preset: z.enum(["7d", "1m", "6m", "1y", "summer2025", "custom"]),
+  preset: z.enum(["7d", "1m", "6m", "1y", "custom"]),
   from: z.number().int().optional(),
   to: z.number().int().optional(),
 });

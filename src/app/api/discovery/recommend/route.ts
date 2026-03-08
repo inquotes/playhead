@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
-import { buildListeningSnapshot, generateDeterministicRecommendations } from "@/server/discovery/pipeline";
+import { generateDeterministicRecommendations, laneToContext } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
+import { getKnownArtists } from "@/server/lastfm/service";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 const requestSchema = z.object({
   analysisRunId: z.string().min(1),
   laneId: z.string().min(1),
-  newPreferred: z.boolean().default(true),
   limit: z.number().int().min(1).max(8).default(4),
 });
 
@@ -48,22 +48,14 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const snapshot = await buildListeningSnapshot({
-      username: connection.lastfmUsername,
-      timeWindow: {
-        preset: "custom",
-        from: analysisRun.rangeStart,
-        to: analysisRun.rangeEnd,
-        label: "Selected analysis window",
-      },
-    });
+    const knownArtists = await getKnownArtists({ username: connection.lastfmUsername });
+    const laneContext = laneToContext(selectedLane);
 
     const recommendationResult = await generateDeterministicRecommendations({
       username: connection.lastfmUsername,
-      lane: selectedLane,
-      snapshot,
+      laneContext,
+      knownArtists,
       limit: payload.limit,
-      newPreferred: payload.newPreferred,
     });
 
     const recommendationRun = await prisma.recommendationRun.create({
@@ -71,7 +63,7 @@ export async function POST(request: Request) {
         visitorSessionId,
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
-        newOnly: payload.newPreferred,
+        newOnly: true,
         resultsJson: {
           strategyNote: recommendationResult.strategyNote,
           recommendations: recommendationResult.recommendations,

@@ -5,10 +5,12 @@ import { classifyLanes } from "@/server/discovery/classifier";
 import type {
   ArtistProfile,
   Lane,
+  LaneContext,
   ListeningSnapshot,
   Recommendation,
   RecommendationCandidate,
   RecommendationResult,
+  SimilarArtistHint,
   TasteLane,
   TimeWindow,
 } from "@/server/discovery/types";
@@ -57,14 +59,6 @@ function slugify(value: string): string {
     .slice(0, 42);
 }
 
-function extractFirstYear(text: string): number | null {
-  const years = text.match(/\b(19\d{2}|20\d{2})\b/g);
-  if (!years) return null;
-  const nums = years.map((year) => Number(year)).filter((year) => year >= 1950 && year <= 2035);
-  if (nums.length === 0) return null;
-  return Math.min(...nums);
-}
-
 function summarizeTags(profiles: ArtistProfile[]): string[] {
   const scoreByTag = new Map<string, number>();
   for (const profile of profiles) {
@@ -78,6 +72,45 @@ function summarizeTags(profiles: ArtistProfile[]): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 12)
     .map(([tag]) => tag);
+}
+
+function compactArtistList(artists: string[], max = 3): string {
+  const cleaned = [...new Set(artists.map((artist) => artist.trim()).filter(Boolean))].slice(0, max);
+  return cleaned.join(", ");
+}
+
+function containsTechnicalLanguage(text: string): boolean {
+  return /\b(metadata|sparse|deterministic|algorithm|model|llm|signal|pipeline|schema|parseable)\b/i.test(text);
+}
+
+function enrichLaneDescription(params: {
+  description: string;
+  representativeArtists: string[];
+  tags: string[];
+}): string {
+  const base = params.description.trim();
+  if (base.length >= 60 && !containsTechnicalLanguage(base)) {
+    return base;
+  }
+
+  const tagText = params.tags.slice(0, 3).join(", ") || "distinct moods";
+  const artistText = compactArtistList(params.representativeArtists);
+  return `A lane shaped by ${tagText}, anchored by ${artistText}.`;
+}
+
+function enrichLaneReasoning(params: {
+  reasoning: string;
+  representativeArtists: string[];
+  tags: string[];
+}): string {
+  const base = params.reasoning.trim();
+  if (base.length >= 55 && !containsTechnicalLanguage(base)) {
+    return base;
+  }
+
+  const artistText = compactArtistList(params.representativeArtists);
+  const tagText = params.tags.slice(0, 2).join(" and ") || "a cohesive vibe";
+  return `${artistText} consistently pull this lane toward ${tagText}.`;
 }
 
 function mapTasteLanesToUi(lanes: TasteLane[]): Lane[] {
@@ -94,6 +127,102 @@ function mapTasteLanesToUi(lanes: TasteLane[]): Lane[] {
     memberArtists: lane.memberArtists,
     evidence: lane.context.evidence,
   }));
+}
+
+function uniqueNormalizedArtists(values: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const cleaned = value.trim();
+    if (!cleaned) continue;
+    const normalized = normalizeArtist(cleaned);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(cleaned);
+  }
+  return output;
+}
+
+async function buildLaneSimilarHints(params: {
+  username: string;
+  lane: Lane;
+  perSeedLimit?: number;
+  maxHints?: number;
+}): Promise<SimilarArtistHint[]> {
+  const perSeedLimit = params.perSeedLimit ?? 8;
+  const maxHints = params.maxHints ?? 36;
+  const seedArtists = uniqueNormalizedArtists([...(params.lane.memberArtists ?? []), ...params.lane.artists]).slice(0, 8);
+
+  const hintsByArtist = new Map<string, SimilarArtistHint>();
+
+  for (const seed of seedArtists) {
+    const similar = await getSimilarArtistProfiles({
+      artistName: seed,
+      username: params.username,
+      limit: perSeedLimit,
+    });
+
+    for (const match of similar) {
+      const seedNormalized = normalizeArtist(seed);
+      if (seedNormalized === match.normalizedName) continue;
+
+      const existing = hintsByArtist.get(match.normalizedName);
+      if (!existing) {
+        hintsByArtist.set(match.normalizedName, {
+          artistName: match.artistName,
+          normalizedName: match.normalizedName,
+          supportSeeds: [seed],
+          aggregateMatch: match.match,
+        });
+        continue;
+      }
+
+      if (!existing.supportSeeds.some((seedArtist) => normalizeArtist(seedArtist) === seedNormalized)) {
+        existing.supportSeeds.push(seed);
+      }
+      existing.aggregateMatch += match.match;
+    }
+  }
+
+  return [...hintsByArtist.values()]
+    .sort((a, b) => {
+      if (b.supportSeeds.length !== a.supportSeeds.length) {
+        return b.supportSeeds.length - a.supportSeeds.length;
+      }
+      return b.aggregateMatch - a.aggregateMatch;
+    })
+    .slice(0, maxHints);
+}
+
+export function laneToContext(lane: Lane): LaneContext {
+  return {
+    laneId: lane.id,
+    label: lane.name,
+    description: lane.description,
+    representativeArtists: uniqueNormalizedArtists(lane.artists),
+    memberArtists: uniqueNormalizedArtists(lane.memberArtists ?? lane.artists),
+    tags: [...new Set((lane.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean))],
+    sourceWindow: lane.sourceWindow ?? "Selected analysis window",
+    similarHints: lane.similarHints ?? [],
+  };
+}
+
+async function attachSimilarHintsToLanes(params: { username: string; lanes: Lane[] }): Promise<Lane[]> {
+  return Promise.all(
+    params.lanes.map(async (lane) => {
+      const similarHints = await buildLaneSimilarHints({
+        username: params.username,
+        lane,
+      });
+
+      return {
+        ...lane,
+        artists: uniqueNormalizedArtists(lane.artists),
+        memberArtists: uniqueNormalizedArtists(lane.memberArtists ?? lane.artists),
+        similarHints,
+      };
+    }),
+  );
 }
 
 export async function buildListeningSnapshot(params: {
@@ -191,7 +320,7 @@ function buildFallbackLanes(snapshot: ListeningSnapshot): {
     });
 
   return {
-    summary: `Built ${fallback.length} lanes from direct Last.fm artist patterns in ${snapshot.timeWindow.label.toLowerCase()}.`,
+    summary: `Your listening in ${snapshot.timeWindow.label.toLowerCase()} splits into ${fallback.length} distinct taste lanes with clear artist anchors.`,
     notablePatterns: [
       `Top tags include ${snapshot.summary.topTags.slice(0, 3).join(", ") || "mixed signals"}.`,
       "Lane composition is weighted by period playcount and repeated tag overlaps.",
@@ -222,7 +351,7 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         {
           role: "system",
           content:
-            "You are a music taste analyst. Group artists into exactly 3 practical discovery lanes using only supplied evidence. Return concise grounded output.",
+            "You are a music taste analyst. Group artists into exactly 3 practical discovery lanes using only supplied evidence. Use vivid, listener-friendly language with musical texture and mood. Avoid technical framing. Do not mention internal limitations or terms such as metadata quality, sparse data, deterministic logic, model behavior, schemas, or parsing.",
         },
         {
           role: "user",
@@ -275,7 +404,11 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
       return {
         id: slugify(`${lane.label}-${idx + 1}`) || `lane-${idx + 1}`,
         label: lane.label,
-        description: lane.description,
+        description: enrichLaneDescription({
+          description: lane.description,
+          representativeArtists,
+          tags,
+        }),
         representativeArtists,
         memberArtists: memberArtists.length > 0 ? memberArtists : representativeArtists,
         confidence: Math.min(1, Math.max(0, lane.confidence)),
@@ -283,22 +416,38 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         context: {
           tags,
           totalPlays,
-          evidence: [lane.reasoning],
+          evidence: [
+            enrichLaneReasoning({
+              reasoning: lane.reasoning,
+              representativeArtists,
+              tags,
+            }),
+          ],
         },
       };
+    });
+
+    const lanesWithHints = await attachSimilarHintsToLanes({
+      username: snapshot.username,
+      lanes: mapTasteLanesToUi(lanes),
     });
 
     return {
       summary: parsed.summary,
       notablePatterns: parsed.notablePatterns,
-      lanes: mapTasteLanesToUi(lanes),
+      lanes: lanesWithHints,
     };
   } catch {
     const fallback = buildFallbackLanes(snapshot);
+    const lanesWithHints = await attachSimilarHintsToLanes({
+      username: snapshot.username,
+      lanes: mapTasteLanesToUi(fallback.lanes),
+    });
+
     return {
       summary: fallback.summary,
       notablePatterns: fallback.notablePatterns,
-      lanes: mapTasteLanesToUi(fallback.lanes),
+      lanes: lanesWithHints,
     };
   }
 }
@@ -340,7 +489,7 @@ function rankCandidate(params: {
 }
 
 async function generateRecommendationExplanations(params: {
-  lane: Lane;
+  laneContext: LaneContext;
   candidates: Recommendation[];
 }): Promise<Map<string, string>> {
   const client = getOpenAIClient();
@@ -358,9 +507,9 @@ async function generateRecommendationExplanations(params: {
           role: "user",
           content: JSON.stringify({
             lane: {
-              label: params.lane.name,
-              description: params.lane.description,
-              tags: params.lane.tags,
+              label: params.laneContext.label,
+              description: params.laneContext.description,
+              tags: params.laneContext.tags,
             },
             candidates: params.candidates.map((candidate) => ({
               artist: candidate.artist,
@@ -391,18 +540,18 @@ async function generateRecommendationExplanations(params: {
 
 export async function generateDeterministicRecommendations(params: {
   username: string;
-  lane: Lane;
-  snapshot: ListeningSnapshot;
+  laneContext: LaneContext;
+  knownArtists: Array<{ artistName: string; normalizedName: string; playcount: number }>;
   limit: number;
-  newPreferred: boolean;
 }): Promise<RecommendationResult> {
   const limit = Math.max(1, Math.min(4, params.limit));
-  const knownPlayMap = new Map(params.snapshot.knownArtists.map((artist) => [artist.normalizedName, artist.playcount]));
-  const seedArtists = [...new Set([...(params.lane.memberArtists ?? []), ...params.lane.artists])]
-    .filter(Boolean)
-    .slice(0, 8);
+  const knownPlayMap = new Map(params.knownArtists.map((artist) => [artist.normalizedName, artist.playcount]));
+  const seedArtists = uniqueNormalizedArtists([
+    ...params.laneContext.memberArtists,
+    ...params.laneContext.representativeArtists,
+  ]).slice(0, 8);
 
-  const laneTagSet = new Set(params.lane.tags.map((tag) => tag.toLowerCase()));
+  const laneTagSet = new Set(params.laneContext.tags.map((tag) => tag.toLowerCase()));
   const candidateMap = new Map<
     string,
     {
@@ -412,21 +561,46 @@ export async function generateDeterministicRecommendations(params: {
     }
   >();
 
+  const upsertCandidate = (candidate: {
+    normalizedName: string;
+    artistName: string;
+    seedArtist: string;
+    matchScore: number;
+  }) => {
+    const existing = candidateMap.get(candidate.normalizedName);
+    if (!existing) {
+      candidateMap.set(candidate.normalizedName, {
+        artistName: candidate.artistName,
+        supportSeeds: new Set([candidate.seedArtist]),
+        supportMatchTotal: candidate.matchScore,
+      });
+      return;
+    }
+
+    existing.supportSeeds.add(candidate.seedArtist);
+    existing.supportMatchTotal += candidate.matchScore;
+  };
+
+  for (const hint of params.laneContext.similarHints) {
+    for (const seedArtist of hint.supportSeeds) {
+      upsertCandidate({
+        normalizedName: hint.normalizedName,
+        artistName: hint.artistName,
+        seedArtist,
+        matchScore: hint.aggregateMatch / Math.max(1, hint.supportSeeds.length),
+      });
+    }
+  }
+
   for (const seed of seedArtists) {
     const similar = await getSimilarArtistProfiles({ artistName: seed, username: params.username, limit: 24 });
     for (const match of similar) {
-      const existing = candidateMap.get(match.normalizedName);
-      if (!existing) {
-        candidateMap.set(match.normalizedName, {
-          artistName: match.artistName,
-          supportSeeds: new Set([seed]),
-          supportMatchTotal: match.match,
-        });
-        continue;
-      }
-
-      existing.supportSeeds.add(seed);
-      existing.supportMatchTotal += match.match;
+      upsertCandidate({
+        normalizedName: match.normalizedName,
+        artistName: match.artistName,
+        seedArtist: seed,
+        matchScore: match.match,
+      });
     }
   }
 
@@ -451,13 +625,6 @@ export async function generateDeterministicRecommendations(params: {
     });
 
     const excluded = (knownPlaycount ?? 0) >= 10;
-    const firstKnownYear = extractFirstYear(profile.bio);
-    const newEraAdjust =
-      params.newPreferred && firstKnownYear
-        ? firstKnownYear >= 2019
-          ? 8
-          : -4
-        : 0;
 
     recommendationCandidates.push({
       artistName: candidate.artistName,
@@ -465,13 +632,12 @@ export async function generateDeterministicRecommendations(params: {
       supportingSeedArtists: [...candidate.supportSeeds],
       evidence: rank.evidence,
       status: excluded ? "excluded" : "included",
-      finalScore: (excluded ? rank.score - 30 : rank.score) + newEraAdjust,
+      finalScore: excluded ? rank.score - 30 : rank.score,
       metadata: {
         tags: profile.tags.slice(0, 6),
         listeners: profile.listeners,
         knownPlaycount,
         supportMatchTotal: candidate.supportMatchTotal,
-        firstKnownYear,
       },
     });
   }
@@ -483,22 +649,19 @@ export async function generateDeterministicRecommendations(params: {
 
   const baseRecommendations: Recommendation[] = selected.map((candidate) => {
     const tags = ((candidate.metadata.tags as string[] | undefined) ?? []).slice(0, 5);
-    const firstKnownYear = (candidate.metadata.firstKnownYear as number | null | undefined) ?? null;
 
     return {
       artist: candidate.artistName,
       score: Math.round(candidate.finalScore),
       reason: candidate.evidence[0] ?? "Fits this lane based on deterministic similarity signals.",
-      matchSource: candidate.supportingSeedArtists[0] ?? params.lane.artists[0] ?? "lane_seed",
+      matchSource: candidate.supportingSeedArtists[0] ?? params.laneContext.representativeArtists[0] ?? "lane_seed",
       tags,
-      firstKnownYear,
-      isLikelyNewEra: Boolean(firstKnownYear && firstKnownYear >= 2019),
       evidence: candidate.evidence,
     };
   });
 
   const explanationMap = await generateRecommendationExplanations({
-    lane: params.lane,
+    laneContext: params.laneContext,
     candidates: baseRecommendations,
   });
 
@@ -506,12 +669,12 @@ export async function generateDeterministicRecommendations(params: {
     ...recommendation,
     reason:
       explanationMap.get(normalizeArtist(recommendation.artist)) ??
-      `${recommendation.artist} aligns with ${params.lane.name} through ${recommendation.matchSource} and shared sonic traits.`,
+      `${recommendation.artist} aligns with ${params.laneContext.label} through ${recommendation.matchSource} and shared sonic traits.`,
   }));
 
   return {
-    laneId: params.lane.id,
-    laneLabel: params.lane.name,
+    laneId: params.laneContext.laneId,
+    laneLabel: params.laneContext.label,
     candidates: recommendationCandidates,
     recommendations,
     strategyNote:

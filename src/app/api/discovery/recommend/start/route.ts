@@ -9,7 +9,6 @@ import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session
 const requestSchema = z.object({
   analysisRunId: z.string().min(1),
   laneId: z.string().min(1),
-  newPreferred: z.boolean().default(true),
   limit: z.number().int().min(1).max(8).default(4),
 });
 
@@ -67,7 +66,6 @@ export async function POST(request: Request) {
       username: connection.lastfmUsername,
       analysisRunId: payload.analysisRunId,
       laneId: payload.laneId,
-      newPreferred: payload.newPreferred,
       limit: payload.limit,
     });
 

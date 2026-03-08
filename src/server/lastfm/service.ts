@@ -328,12 +328,20 @@ export async function getKnownArtists(params: { username: string }): Promise<Arr
       ttlSeconds: 60 * 60 * 6,
     },
     async () => {
-      const pagesToRead = 4;
+      const maxPagesToRead = 24;
       const byArtist = new Map<string, { artistName: string; normalizedName: string; playcount: number }>();
 
-      for (let page = 1; page <= pagesToRead; page += 1) {
+      let page = 1;
+      let totalPages = 1;
+      while (page <= totalPages && page <= maxPagesToRead) {
         const response = await getLibraryArtists({ user: username, limit: 500, page });
         const parsed = parseLibraryArtists(response);
+        const attr = (response.artists as { "@attr"?: { totalPages?: unknown } } | undefined)?.["@attr"];
+        const parsedTotalPages = toNumber(attr?.totalPages);
+        if (parsedTotalPages && parsedTotalPages > 0) {
+          totalPages = Math.floor(parsedTotalPages);
+        }
+
         if (parsed.length === 0) {
           break;
         }
@@ -350,6 +358,8 @@ export async function getKnownArtists(params: { username: string }): Promise<Arr
         if (parsed.length < 500) {
           break;
         }
+
+        page += 1;
       }
 
       if (byArtist.size === 0) {

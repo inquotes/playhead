@@ -1,5 +1,5 @@
 export type TimeWindow = {
-  preset: "7d" | "1m" | "6m" | "1y" | "summer2025" | "custom";
+  preset: "7d" | "1m" | "6m" | "1y" | "custom";
   from: number;
   to: number;
   label: string;
@@ -51,6 +51,24 @@ export type TasteLane = {
   };
 };
 
+export type SimilarArtistHint = {
+  artistName: string;
+  normalizedName: string;
+  supportSeeds: string[];
+  aggregateMatch: number;
+};
+
+export type LaneContext = {
+  laneId: string;
+  label: string;
+  description: string;
+  representativeArtists: string[];
+  memberArtists: string[];
+  tags: string[];
+  sourceWindow: string;
+  similarHints: SimilarArtistHint[];
+};
+
 export type RecommendationCandidate = {
   artistName: string;
   normalizedName: string;
@@ -67,8 +85,6 @@ export type Recommendation = {
   reason: string;
   matchSource: string;
   tags: string[];
-  firstKnownYear: number | null;
-  isLikelyNewEra: boolean;
   evidence: string[];
 };
 
@@ -92,6 +108,7 @@ export type Lane = {
   sourceWindow?: string;
   memberArtists?: string[];
   evidence?: string[];
+  similarHints?: SimilarArtistHint[];
 };
 
 export type ArtistWithTags = {

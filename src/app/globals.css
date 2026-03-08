@@ -338,6 +338,10 @@ input {
   align-items: center;
 }
 
+.mp-actions-left {
+  justify-content: flex-start;
+}
+
 .mp-center-cta {
   display: flex;
   justify-content: center;
@@ -383,6 +387,18 @@ input {
   height: 6px;
   background: var(--accent);
   border-radius: 50%;
+}
+
+.mp-status-line.is-done span {
+  background: #2a9d62;
+}
+
+.mp-status-line.is-active span {
+  box-shadow: 0 0 0 6px color-mix(in oklab, var(--accent) 18%, white 82%);
+}
+
+.mp-status-line.is-pending p {
+  color: var(--ink-tertiary);
 }
 
 .mp-status-line p {
@@ -512,6 +528,52 @@ input {
   font-weight: 350;
 }
 
+.mp-detail-cta {
+  margin-top: 1rem;
+}
+
+.mp-progress-block {
+  margin-top: 0.9rem;
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  padding: 0.8rem;
+  background: var(--surface-subtle);
+}
+
+.mp-status-compact {
+  margin: 0.7rem 0 0;
+}
+
+.mp-custom-range {
+  margin-top: 0.6rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.mp-custom-grid {
+  margin-top: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.mp-select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.55rem 0.6rem;
+}
+
+.mp-inline-error {
+  margin: 0.65rem 0 0;
+  color: var(--danger-ink);
+  font-size: 0.85rem;
+}
+
 .mp-checkbox-row {
   margin-top: 0.8rem;
   display: flex;
@@ -621,6 +683,10 @@ input {
   }
 
   .mp-range-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mp-custom-grid {
     grid-template-columns: 1fr;
   }
 
