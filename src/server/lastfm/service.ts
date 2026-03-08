@@ -5,6 +5,7 @@ import {
   getLibraryArtists,
   getRecentTracks,
   getSimilarArtists,
+  getTopAlbums,
   getTopArtists,
   getTopTracks,
   getWeeklyArtistChart,
@@ -39,6 +40,11 @@ type ParsedSimilarArtist = {
   artistName: string;
   normalizedName: string;
   match: number;
+};
+
+type ParsedTopAlbum = {
+  albumName: string;
+  playcount: number;
 };
 
 function normalizeArtistName(value: string): string {
@@ -182,6 +188,22 @@ function parseSimilarArtistsPayload(payload: unknown): ParsedSimilarArtist[] {
       };
     })
     .filter((item): item is ParsedSimilarArtist => Boolean(item));
+}
+
+function parseTopAlbumsPayload(payload: unknown): ParsedTopAlbum[] {
+  const albums =
+    payload && typeof payload === "object"
+      ? ((payload as { topalbums?: { album?: unknown[] } }).topalbums?.album ?? [])
+      : [];
+
+  return (Array.isArray(albums) ? albums : [])
+    .map((item) => {
+      const albumName = readString((item as { name?: unknown }).name);
+      const playcount = toNumber((item as { playcount?: unknown }).playcount) ?? 0;
+      if (!albumName) return null;
+      return { albumName, playcount };
+    })
+    .filter((item): item is ParsedTopAlbum => Boolean(item));
 }
 
 function parseLibraryArtists(payload: unknown): Array<{ artistName: string; normalizedName: string; playcount: number }> {
@@ -411,4 +433,28 @@ export async function getTopTrackSummary(username: string): Promise<Array<{ arti
         .filter((item): item is { artist: string; track: string; playcount: number } => Boolean(item));
     },
   );
+}
+
+export async function getArtistTopAlbumSuggestion(params: {
+  artistName: string;
+}): Promise<string | null> {
+  const artistName = params.artistName.trim();
+  if (!artistName) return null;
+
+  const scope = `artist:${normalizeArtistName(artistName)}`;
+  const albums = await readThroughCache(
+    {
+      scope,
+      method: "artist.getTopAlbums",
+      params: { artist: artistName },
+      ttlSeconds: 60 * 60 * 24 * 14,
+    },
+    async () => {
+      const raw = await getTopAlbums({ artist: artistName, limit: 8, autocorrect: 1 });
+      return parseTopAlbumsPayload(raw);
+    },
+  );
+
+  const top = albums[0];
+  return top?.albumName ?? null;
 }

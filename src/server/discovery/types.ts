@@ -83,6 +83,8 @@ export type Recommendation = {
   artist: string;
   score: number;
   reason: string;
+  blurb: string;
+  recommendedAlbum?: string | null;
   matchSource: string;
   tags: string[];
   evidence: string[];

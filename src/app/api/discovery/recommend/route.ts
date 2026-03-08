@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/server/db";
 import { generateDeterministicRecommendations, laneToContext } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
+import { getCurrentUserAccount } from "@/server/auth";
 import { getKnownArtists } from "@/server/lastfm/service";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -18,19 +19,16 @@ export async function POST(request: Request) {
     const payload = requestSchema.parse(await request.json());
     const context = await getOrCreateVisitorSession();
     const visitorSessionId = context.sessionId;
-
-    const [connection, analysisRun] = await Promise.all([
-      prisma.lastfmConnection.findUnique({ where: { visitorSessionId } }),
-      prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } }),
-    ]);
-
-    if (!connection?.lastfmUsername || connection.status !== "connected") {
+    const userAccount = await getCurrentUserAccount();
+    if (!userAccount) {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before generating recommendations." },
-        { status: 400 },
+        { status: 401 },
       );
       return attachVisitorCookie(response, context);
     }
+
+    const analysisRun = await prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } });
 
     if (!analysisRun) {
       const response = NextResponse.json({ ok: false, message: "Analysis run not found." }, { status: 404 });
@@ -48,11 +46,12 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const knownArtists = await getKnownArtists({ username: connection.lastfmUsername });
+    const targetUsername = analysisRun.targetLastfmUsername ?? userAccount.lastfmUsername;
+    const knownArtists = await getKnownArtists({ username: targetUsername });
     const laneContext = laneToContext(selectedLane);
 
     const recommendationResult = await generateDeterministicRecommendations({
-      username: connection.lastfmUsername,
+      username: targetUsername,
       laneContext,
       knownArtists,
       limit: payload.limit,
@@ -61,6 +60,8 @@ export async function POST(request: Request) {
     const recommendationRun = await prisma.recommendationRun.create({
       data: {
         visitorSessionId,
+        userAccountId: userAccount.id,
+        targetLastfmUsername: targetUsername,
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
         newOnly: true,

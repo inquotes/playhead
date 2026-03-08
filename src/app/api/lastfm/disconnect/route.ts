@@ -15,7 +15,6 @@ export async function POST() {
       },
       update: {
         status: "disconnected",
-        mcpSessionId: null,
         lastfmUsername: null,
         authErrorCode: null,
         lastVerifiedAt: new Date(),

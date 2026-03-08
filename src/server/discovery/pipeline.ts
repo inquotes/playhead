@@ -17,6 +17,7 @@ import type {
 import {
   getAggregatedWeeklyArtists,
   getArtistProfile,
+  getArtistTopAlbumSuggestion,
   getKnownArtists,
   getSimilarArtistProfiles,
   getTopTrackSummary,
@@ -44,7 +45,7 @@ const laneModelSchema = z.object({
 });
 
 const explanationSchema = z.object({
-  explanations: z.array(z.object({ artist: z.string().min(1), explanation: z.string().min(1) })).min(1).max(8),
+  explanations: z.array(z.object({ artist: z.string().min(1), blurb: z.string().min(1) })).min(1).max(8),
 });
 
 function normalizeArtist(value: string): string {
@@ -141,6 +142,15 @@ function uniqueNormalizedArtists(values: string[]): string[] {
     output.push(cleaned);
   }
   return output;
+}
+
+function cleanBioSnippet(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/Read more on Last\.fm\.?/gi, "")
+    .trim()
+    .slice(0, 180);
 }
 
 async function buildLaneSimilarHints(params: {
@@ -490,7 +500,13 @@ function rankCandidate(params: {
 
 async function generateRecommendationExplanations(params: {
   laneContext: LaneContext;
-  candidates: Recommendation[];
+  candidates: Array<{
+    artist: string;
+    matchSource: string;
+    tags: string[];
+    bioSnippet: string;
+    supportingSeedArtists: string[];
+  }>;
 }): Promise<Map<string, string>> {
   const client = getOpenAIClient();
 
@@ -501,7 +517,7 @@ async function generateRecommendationExplanations(params: {
         {
           role: "system",
           content:
-            "You write concise recommendation explanations grounded only in supplied evidence. Do not invent facts or biographies.",
+            "You are a playlist editor writing short artist blurbs. Write 1-2 sentences that feel human, specific, and musical. Describe the artist's sound and mood first, then optionally connect to the lane. Never mention internal ranking logic, algorithms, similarity scores, seeds, novelty, pipelines, metadata, LLMs, or system mechanics. Use only supplied facts; do not invent albums, tracks, or biography details.",
         },
         {
           role: "user",
@@ -515,7 +531,8 @@ async function generateRecommendationExplanations(params: {
               artist: candidate.artist,
               matchSource: candidate.matchSource,
               tags: candidate.tags,
-              evidence: candidate.evidence,
+              bioSnippet: candidate.bioSnippet,
+              supportingSeedArtists: candidate.supportingSeedArtists.slice(0, 2),
             })),
           }),
         },
@@ -530,12 +547,33 @@ async function generateRecommendationExplanations(params: {
 
     const map = new Map<string, string>();
     for (const item of parsed.explanations) {
-      map.set(normalizeArtist(item.artist), item.explanation);
+      map.set(normalizeArtist(item.artist), item.blurb.trim());
     }
     return map;
   } catch {
     return new Map();
   }
+}
+
+function buildEditorialFallbackBlurb(params: {
+  artist: string;
+  laneLabel: string;
+  tags: string[];
+  supportingSeedArtists: string[];
+  bioSnippet: string;
+}): string {
+  const tagText = params.tags.slice(0, 2).join(" and ");
+  const seed = params.supportingSeedArtists[0];
+
+  if (params.bioSnippet.trim().length > 0) {
+    return `${params.bioSnippet.trim()} This sits naturally in your ${params.laneLabel.toLowerCase()} lane${seed ? ` next to ${seed}` : ""}.`;
+  }
+
+  if (tagText) {
+    return `${params.artist} leans into ${tagText} textures that suit the mood of your ${params.laneLabel.toLowerCase()} lane${seed ? ` alongside ${seed}` : ""}.`;
+  }
+
+  return `${params.artist} matches the tone and pacing of your ${params.laneLabel.toLowerCase()} lane${seed ? `, especially if you like ${seed}` : ""}.`;
 }
 
 export async function generateDeterministicRecommendations(params: {
@@ -635,6 +673,7 @@ export async function generateDeterministicRecommendations(params: {
       finalScore: excluded ? rank.score - 30 : rank.score,
       metadata: {
         tags: profile.tags.slice(0, 6),
+        bioSnippet: cleanBioSnippet(profile.bio),
         listeners: profile.listeners,
         knownPlaycount,
         supportMatchTotal: candidate.supportMatchTotal,
@@ -649,11 +688,21 @@ export async function generateDeterministicRecommendations(params: {
 
   const baseRecommendations: Recommendation[] = selected.map((candidate) => {
     const tags = ((candidate.metadata.tags as string[] | undefined) ?? []).slice(0, 5);
+    const bioSnippet = ((candidate.metadata.bioSnippet as string | undefined) ?? "").trim();
+    const supportingSeedArtists = candidate.supportingSeedArtists;
 
     return {
       artist: candidate.artistName,
       score: Math.round(candidate.finalScore),
-      reason: candidate.evidence[0] ?? "Fits this lane based on deterministic similarity signals.",
+      reason: candidate.evidence[0] ?? "Supported by similar artists in this lane.",
+      blurb: buildEditorialFallbackBlurb({
+        artist: candidate.artistName,
+        laneLabel: params.laneContext.label,
+        tags,
+        supportingSeedArtists,
+        bioSnippet,
+      }),
+      recommendedAlbum: null,
       matchSource: candidate.supportingSeedArtists[0] ?? params.laneContext.representativeArtists[0] ?? "lane_seed",
       tags,
       evidence: candidate.evidence,
@@ -662,14 +711,29 @@ export async function generateDeterministicRecommendations(params: {
 
   const explanationMap = await generateRecommendationExplanations({
     laneContext: params.laneContext,
-    candidates: baseRecommendations,
+    candidates: selected.map((candidate) => ({
+      artist: candidate.artistName,
+      matchSource: candidate.supportingSeedArtists[0] ?? params.laneContext.representativeArtists[0] ?? "lane_seed",
+      tags: ((candidate.metadata.tags as string[] | undefined) ?? []).slice(0, 5),
+      bioSnippet: ((candidate.metadata.bioSnippet as string | undefined) ?? "").trim(),
+      supportingSeedArtists: candidate.supportingSeedArtists,
+    })),
   });
+
+  const albumByArtist = new Map<string, string | null>();
+  await Promise.all(
+    selected.map(async (candidate) => {
+      const album = await getArtistTopAlbumSuggestion({ artistName: candidate.artistName });
+      albumByArtist.set(normalizeArtist(candidate.artistName), album);
+    }),
+  );
 
   const recommendations = baseRecommendations.map((recommendation) => ({
     ...recommendation,
-    reason:
+    blurb:
       explanationMap.get(normalizeArtist(recommendation.artist)) ??
-      `${recommendation.artist} aligns with ${params.laneContext.label} through ${recommendation.matchSource} and shared sonic traits.`,
+      recommendation.blurb,
+    recommendedAlbum: albumByArtist.get(normalizeArtist(recommendation.artist)) ?? null,
   }));
 
   return {

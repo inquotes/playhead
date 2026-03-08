@@ -1,14 +1,14 @@
 # Music Discovery Tool (API-first Last.fm + Next.js)
 
 Music discovery app with deterministic retrieval and LLM-assisted interpretation:
-- connect a Last.fm username
+- connect your Last.fm account
 - choose a listening window
 - fetch and normalize listening data directly from Last.fm API
 - synthesize 3 taste lanes from compact artist-level evidence
 - expand/rank recommendations deterministically
 - use the LLM only to explain lane fit for final picks
 
-No site account is required. The app uses an anonymous session cookie and stores run history per visitor session.
+The app uses Last.fm Web Authentication and stores an app session cookie after connect.
 
 ## Local setup
 
@@ -42,10 +42,10 @@ Open http://localhost:3000.
 
 ## Last.fm connect flow
 
-1. Enter your Last.fm username.
-2. Click `Connect Username`.
-3. Backend validates direct API access for that username.
-4. Run analysis and recommendations.
+1. Click `Connect Last.fm`.
+2. Approve access on Last.fm.
+3. The callback exchanges token -> Last.fm session key.
+4. App stores an authenticated session and runs analysis/recommendations.
 
 ## API-first flow notes
 
@@ -70,7 +70,8 @@ Open http://localhost:3000.
 
 - `PIPELINE_TIMEOUT_MS` (default `180000`)
 - `LASTFM_API_KEY`
-- `LASTFM_API_SECRET` (reserved for future signed methods)
+- `LASTFM_API_SECRET`
+- `LASTFM_SESSION_ENCRYPTION_KEY` (32-byte key in base64 or 64-char hex)
 
 ## Key API routes
 

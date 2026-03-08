@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "crypto";
 
 const LASTFM_API_BASE = "https://ws.audioscrobbler.com/2.0/";
 
@@ -29,6 +30,15 @@ export function getLastfmApiKey(): string {
 
 export function getLastfmApiSecret(): string {
   return getEnv("LASTFM_API_SECRET");
+}
+
+function signLastfmParams(params: Record<string, string>): string {
+  const payload = Object.keys(params)
+    .sort((a, b) => a.localeCompare(b))
+    .map((key) => `${key}${params[key]}`)
+    .join("");
+
+  return createHash("md5").update(`${payload}${getLastfmApiSecret()}`).digest("hex");
 }
 
 async function callLastfm<T extends JsonRecord>({ method, params = {} }: LastfmCallParams): Promise<T> {
@@ -94,6 +104,17 @@ export type LastfmTopArtistsParams = {
   page?: number;
 };
 
+export type LastfmUserInfoParams = {
+  user: string;
+};
+
+export async function getUserInfo(params: LastfmUserInfoParams) {
+  return callLastfm<{ user: JsonRecord }>({
+    method: "user.getInfo",
+    params,
+  });
+}
+
 export async function getTopArtists(params: LastfmTopArtistsParams) {
   return callLastfm<{ topartists: JsonRecord }>({
     method: "user.getTopArtists",
@@ -158,6 +179,19 @@ export async function getSimilarArtists(params: LastfmSimilarArtistsParams) {
   });
 }
 
+export type LastfmTopAlbumsParams = {
+  artist: string;
+  limit?: number;
+  autocorrect?: 0 | 1;
+};
+
+export async function getTopAlbums(params: LastfmTopAlbumsParams) {
+  return callLastfm<{ topalbums: JsonRecord }>({
+    method: "artist.getTopAlbums",
+    params,
+  });
+}
+
 export type LastfmLibraryArtistsParams = {
   user: string;
   limit?: number;
@@ -189,4 +223,36 @@ export async function getWeeklyChartList(params: { user: string }) {
     method: "user.getWeeklyChartList",
     params,
   });
+}
+
+export async function getAuthSession(token: string) {
+  const baseParams = {
+    api_key: getLastfmApiKey(),
+    method: "auth.getSession",
+    token,
+  };
+
+  const query = new URLSearchParams({
+    ...baseParams,
+    api_sig: signLastfmParams(baseParams),
+    format: "json",
+  });
+
+  const response = await fetch(`${LASTFM_API_BASE}?${query.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const data = (await response.json()) as JsonRecord;
+  if (!response.ok || typeof data.error === "number" || typeof data.error === "string") {
+    throw new Error(`Last.fm auth.getSession failed: ${String(data.message ?? response.statusText)}`);
+  }
+
+  return data as {
+    session?: {
+      name?: string;
+      key?: string;
+      subscriber?: number | string;
+    };
+  };
 }

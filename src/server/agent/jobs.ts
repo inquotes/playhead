@@ -65,6 +65,8 @@ async function markRunFailed(runId: string, message: string, appendRunEvent: Run
 export async function launchAnalyzeRun(params: {
   runId: string;
   visitorSessionId: string;
+  userAccountId?: string;
+  targetLastfmUsername?: string;
   username: string;
   preset: RangePreset;
   from?: number;
@@ -149,6 +151,8 @@ export async function launchAnalyzeRun(params: {
     const analysisRun = await prisma.analysisRun.create({
       data: {
         visitorSessionId: params.visitorSessionId,
+        userAccountId: params.userAccountId,
+        targetLastfmUsername: params.targetLastfmUsername ?? params.username,
         rangeStart: range.from,
         rangeEnd: range.to,
         sourceVersion: "api-first-v1",
@@ -166,6 +170,7 @@ export async function launchAnalyzeRun(params: {
 
     const resultJson = {
       analysisRunId: analysisRun.id,
+      targetUsername: params.targetLastfmUsername ?? params.username,
       range,
       laneCount: laneResult.lanes.length,
       summary: laneResult.summary,
@@ -206,6 +211,8 @@ export async function launchAnalyzeRun(params: {
 export async function launchRecommendRun(params: {
   runId: string;
   visitorSessionId: string;
+  userAccountId?: string;
+  targetLastfmUsername?: string;
   username: string;
   analysisRunId: string;
   laneId: string;
@@ -233,6 +240,8 @@ export async function launchRecommendRun(params: {
       throw new Error("Analysis run not found for this session.");
     }
 
+    const targetUsername = analysisRun.targetLastfmUsername ?? params.targetLastfmUsername ?? params.username;
+
     const lanePayload = analysisRun.lanesJson as unknown as
       | Lane[]
       | { lanes?: Lane[]; summary?: string; notablePatterns?: string[] };
@@ -257,7 +266,7 @@ export async function launchRecommendRun(params: {
       },
     });
 
-    const knownArtists = await getKnownArtists({ username: params.username });
+    const knownArtists = await getKnownArtists({ username: targetUsername });
 
     await appendRunEvent({
       type: "recommendation_known_history_completed",
@@ -279,7 +288,7 @@ export async function launchRecommendRun(params: {
     });
 
     const recommendationResult = await generateDeterministicRecommendations({
-      username: params.username,
+      username: targetUsername,
       laneContext,
       knownArtists,
       limit: params.limit,
@@ -306,6 +315,8 @@ export async function launchRecommendRun(params: {
     const recommendationRun = await prisma.recommendationRun.create({
       data: {
         visitorSessionId: params.visitorSessionId,
+        userAccountId: params.userAccountId,
+        targetLastfmUsername: targetUsername,
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
         newOnly: true,
@@ -320,6 +331,7 @@ export async function launchRecommendRun(params: {
 
     const resultJson = {
       recommendationRunId: recommendationRun.id,
+      targetUsername,
       strategyNote: recommendationResult.strategyNote,
       lane: selectedLane,
       recommendations: recommendationResult.recommendations,

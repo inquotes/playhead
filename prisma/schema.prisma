@@ -12,6 +12,8 @@ datasource db {
 
 model VisitorSession {
   id                 String              @id
+  userAccountId      String?
+  userAccount        UserAccount?        @relation(fields: [userAccountId], references: [id], onDelete: SetNull)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   lastfmConnection   LastfmConnection?
@@ -20,11 +22,42 @@ model VisitorSession {
   agentRuns          AgentRun[]
 }
 
+model UserAccount {
+  id                 String              @id @default(cuid())
+  lastfmUsername     String              @unique
+  lastfmSessionKey   String?
+  displayName        String?
+  avatarUrl          String?
+  lastLoginAt        DateTime?
+  loginCount         Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  authSessions       AuthSession[]
+  visitorSessions    VisitorSession[]
+  analysisRuns       AnalysisRun[]
+  recommendationRuns RecommendationRun[]
+  agentRuns          AgentRun[]
+}
+
+model AuthSession {
+  id             String      @id @default(cuid())
+  userAccountId  String
+  userAccount    UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  tokenHash      String      @unique
+  userAgent      String?
+  ipAddress      String?
+  expiresAt      DateTime
+  lastActiveAt   DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+
+  @@index([userAccountId])
+  @@index([expiresAt])
+}
+
 model LastfmConnection {
   id                 String         @id @default(cuid())
   visitorSessionId   String         @unique
   visitorSession     VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
-  mcpSessionId       String?
   status             String         @default("disconnected")
   lastfmUsername     String?
   authErrorCode      String?
@@ -37,6 +70,9 @@ model AnalysisRun {
   id                 String         @id @default(cuid())
   visitorSessionId   String
   visitorSession     VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  userAccountId      String?
+  userAccount        UserAccount?   @relation(fields: [userAccountId], references: [id], onDelete: SetNull)
+  targetLastfmUsername String?
   rangeStart         Int
   rangeEnd           Int
   sourceVersion      String
@@ -46,24 +82,35 @@ model AnalysisRun {
   lanesJson          Json
   createdAt          DateTime       @default(now())
   recommendationRuns RecommendationRun[]
+
+  @@index([userAccountId, createdAt])
+  @@index([targetLastfmUsername, createdAt])
 }
 
 model RecommendationRun {
   id               String         @id @default(cuid())
   visitorSessionId String
   visitorSession   VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  userAccountId    String?
+  userAccount      UserAccount?   @relation(fields: [userAccountId], references: [id], onDelete: SetNull)
+  targetLastfmUsername String?
   analysisRunId    String
   analysisRun      AnalysisRun    @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
   selectedLane     String
   newOnly          Boolean        @default(false)
   resultsJson      Json
   createdAt        DateTime       @default(now())
+
+  @@index([analysisRunId, createdAt])
 }
 
 model AgentRun {
   id               String         @id @default(cuid())
   visitorSessionId String
   visitorSession   VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
+  userAccountId    String?
+  userAccount      UserAccount?   @relation(fields: [userAccountId], references: [id], onDelete: SetNull)
+  targetLastfmUsername String?
   mode             String
   status           String         @default("queued")
   requestJson      Json
@@ -78,6 +125,8 @@ model AgentRun {
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
   events           AgentRunEvent[]
+
+  @@index([userAccountId, createdAt])
 }
 
 model AgentRunEvent {

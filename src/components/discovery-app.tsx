@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type ConnectionStatus = {
-  status: "disconnected" | "pending" | "connected" | "error";
-  lastfmUsername: string | null;
-  hasConnection: boolean;
-  authErrorCode: string | null;
+  isAuthenticated: boolean;
+  user: {
+    id: string;
+    lastfmUsername: string;
+    displayName: string | null;
+    avatarUrl: string | null;
+  } | null;
 };
 
 type Lane = {
@@ -23,7 +27,9 @@ type Lane = {
 type Recommendation = {
   artist: string;
   score: number;
-  reason: string;
+  reason?: string;
+  blurb?: string;
+  recommendedAlbum?: string | null;
   matchSource: string;
   tags: string[];
 };
@@ -34,6 +40,34 @@ type AgentRun = {
   status: "queued" | "running" | "completed" | "failed";
   result: unknown;
   errorMessage: string | null;
+};
+
+type UsernameValidationResponse = {
+  ok: true;
+  username: string;
+  normalizedUsername: string;
+};
+
+type HistoryRecommendationRun = {
+  id: string;
+  selectedLane: string;
+  createdAt: string;
+  strategyNote: string | null;
+  recommendations: Recommendation[];
+};
+
+type HistoryAnalysisResponse = {
+  ok: true;
+  analysisRunId: string;
+  targetUsername: string | null;
+  range: {
+    from: number;
+    to: number;
+    label: string;
+  };
+  summary: string | null;
+  lanes: Lane[];
+  recommendationRuns: HistoryRecommendationRun[];
 };
 
 type AgentLiveEvent = {
@@ -116,12 +150,19 @@ export function DiscoveryApp() {
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [usernameInput, setUsernameInput] = useState("");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<AgentLiveEvent[]>([]);
+  const [targetMode, setTargetMode] = useState(false);
+  const [targetUsernameInput, setTargetUsernameInput] = useState("");
+  const [targetUsernameResolved, setTargetUsernameResolved] = useState<string | null>(null);
+  const [targetValidationState, setTargetValidationState] = useState<"idle" | "validating" | "valid" | "error">("idle");
+  const [targetValidationMessage, setTargetValidationMessage] = useState<string | null>(null);
+  const [analysisTargetUsername, setAnalysisTargetUsername] = useState<string | null>(null);
 
-  const username = status?.lastfmUsername ?? "listener";
+  const username = status?.user?.displayName ?? status?.user?.lastfmUsername ?? "listener";
+  const selfUsername = status?.user?.lastfmUsername ?? null;
   const selectedLane = useMemo(() => lanes.find((lane) => lane.id === selectedLaneId) ?? null, [lanes, selectedLaneId]);
+  const displayAnalysisUsername = analysisTargetUsername ?? username;
 
   const currentYear = new Date().getUTCFullYear();
   const yearOptions = useMemo(() => {
@@ -203,76 +244,141 @@ export function DiscoveryApp() {
   }, [analyzeSteps, recommendSteps, view]);
 
   useEffect(() => {
-    void initialize();
+    void (async () => {
+      try {
+        await jsonFetch<{ ok: true }>("/api/session");
+        const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/auth/me");
+        setStatus(nextStatus);
+
+        const search = new URLSearchParams(window.location.search);
+        const analysisRunId = search.get("analysisRunId");
+        const recommendationRunId = search.get("recommendationRunId");
+        if (nextStatus.isAuthenticated && analysisRunId) {
+          await hydrateFromHistory(analysisRunId, recommendationRunId);
+        }
+
+        const authError = search.get("error");
+        if (authError) {
+          if (authError === "auth_failed") {
+            setError("Could not complete Last.fm authentication. Please try again.");
+          } else if (authError === "invalid_state") {
+            setError("Authentication session expired. Please connect again.");
+          } else if (authError === "server_config") {
+            setError("Server configuration issue. Please check env settings.");
+          } else {
+            setError(authError.replace(/_/g, " "));
+          }
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to initialize.");
+      }
+    })();
   }, []);
 
-  async function initialize() {
+  async function hydrateFromHistory(analysisRunIdParam: string, recommendationRunId: string | null) {
+    setBusy(true);
+    setError(null);
     try {
-      await jsonFetch<{ ok: true }>("/api/session");
-      const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/lastfm/connect/status");
-      setStatus(nextStatus);
-      if (nextStatus.lastfmUsername) {
-        setUsernameInput(nextStatus.lastfmUsername);
-        if (nextStatus.status === "connected") {
-          setView("time-select");
-        }
+      const data = await jsonFetch<HistoryAnalysisResponse>(`/api/history/analysis/${analysisRunIdParam}`);
+      setAnalysisRunId(data.analysisRunId);
+      setAnalysisTargetUsername(data.targetUsername);
+      setAnalysisRangeLabel(data.range.label);
+      setLanes(data.lanes ?? []);
+      setAnalysisSummary(data.summary ?? null);
+
+      const hydratedRec = recommendationRunId
+        ? data.recommendationRuns.find((run) => run.id === recommendationRunId) ?? null
+        : null;
+
+      if (hydratedRec) {
+        setSelectedLaneId(hydratedRec.selectedLane);
+        setRecommendations(hydratedRec.recommendations ?? []);
+        setView("cluster-detail");
+      } else {
+        setSelectedLaneId(data.lanes[0]?.id ?? null);
+        setRecommendations([]);
+        setView("clusters");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to initialize.");
+      setError(err instanceof Error ? err.message : "Could not load saved analysis.");
+    } finally {
+      setBusy(false);
     }
   }
 
   async function startConnect() {
     setBusy(true);
     setError(null);
-    try {
-      const result = await jsonFetch<{ ok: true; status: string; lastfmUsername?: string }>("/api/lastfm/connect/start", {
-        method: "POST",
-        body: JSON.stringify({ username: usernameInput.trim() }),
-      });
-      if (result.status === "connected") {
-        const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/lastfm/connect/status");
-        setStatus(nextStatus);
-        setView("time-select");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not validate this Last.fm username.");
-    } finally {
-      setBusy(false);
-    }
+    window.location.href = "/api/auth/lastfm/start?next=/";
   }
 
-  async function disconnect() {
-    setBusy(true);
+  function goToRecommendations() {
     setError(null);
+    setView("time-select");
+  }
+
+  function resetTargetUser() {
+    setTargetMode(false);
+    setTargetUsernameInput("");
+    setTargetUsernameResolved(null);
+    setTargetValidationState("idle");
+    setTargetValidationMessage(null);
+  }
+
+  async function validateTargetUsername() {
+    const trimmed = targetUsernameInput.trim();
+    if (!trimmed) {
+      setTargetValidationState("error");
+      setTargetValidationMessage("Enter a Last.fm username first.");
+      setTargetUsernameResolved(null);
+      return;
+    }
+
+    if (selfUsername && trimmed.toLowerCase() === selfUsername) {
+      setTargetValidationState("error");
+      setTargetValidationMessage("That is your account. Use Analyze My Taste instead.");
+      setTargetUsernameResolved(null);
+      return;
+    }
+
+    setTargetValidationState("validating");
+    setTargetValidationMessage(null);
+    setTargetUsernameResolved(null);
+
     try {
-      await jsonFetch<{ ok: true }>("/api/lastfm/disconnect", {
+      const result = await jsonFetch<UsernameValidationResponse>("/api/lastfm/validate-username", {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ username: trimmed }),
       });
-      setStatus({ status: "disconnected", lastfmUsername: null, hasConnection: false, authErrorCode: null });
-      setAnalysisRunId(null);
-      setAnalysisRangeLabel(null);
-      setLanes([]);
-      setSelectedLaneId(null);
-      setAnalysisSummary(null);
-      setRecommendations([]);
-      setView("landing");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not disconnect.");
-    } finally {
-      setBusy(false);
+      setTargetValidationState("valid");
+      setTargetValidationMessage(`Validated as ${result.username}.`);
+      setTargetUsernameResolved(result.normalizedUsername);
+    } catch {
+      setTargetValidationState("error");
+      setTargetValidationMessage("Could not verify that Last.fm username.");
+      setTargetUsernameResolved(null);
     }
   }
 
   async function runAnalysis() {
+    setAnalysisTargetUsername(targetMode ? targetUsernameResolved : selfUsername);
     setView("analyzing");
     setBusy(true);
     setError(null);
     setRecommendations([]);
     setLiveEvents([]);
 
-    let requestBody: { preset: RangeOptionId; from?: number; to?: number } = { preset: selectedRange };
+    let requestBody: { preset: RangeOptionId; from?: number; to?: number; targetUsername?: string } = { preset: selectedRange };
+    if (targetMode) {
+      if (targetValidationState !== "valid" || !targetUsernameResolved) {
+        setError("Validate a different Last.fm username before running analysis.");
+        setView("time-select");
+        setBusy(false);
+        return;
+      }
+      requestBody.targetUsername = targetUsernameResolved;
+    }
+
     if (selectedRange === "custom") {
       if (!customRangeIsValid || !customStartYear || !customStartMonth || !customEndYear || !customEndMonth) {
         setError("Please choose a valid start and end month.");
@@ -297,6 +403,7 @@ export function DiscoveryApp() {
       const data = await waitForRunResult(start.runId);
 
       setAnalysisRunId(data.analysisRunId ?? null);
+      setAnalysisTargetUsername(data.targetUsername ?? (targetMode ? targetUsernameResolved : selfUsername) ?? null);
       setAnalysisRangeLabel(data.range?.label ?? null);
       const nextLanes = data.lanes ?? [];
       setLanes(nextLanes);
@@ -304,6 +411,7 @@ export function DiscoveryApp() {
       setAnalysisSummary(data.summary ?? null);
       setTimeout(() => setView("clusters"), 250);
     } catch (err) {
+      setAnalysisTargetUsername(null);
       setError(err instanceof Error ? err.message : "Analysis failed.");
       setView("time-select");
     } finally {
@@ -360,6 +468,7 @@ export function DiscoveryApp() {
   async function waitForRunResult(runId: string) {
     return new Promise<{
       analysisRunId?: string;
+      targetUsername?: string;
       range?: { label?: string };
       lanes: Lane[];
       summary?: string;
@@ -387,6 +496,7 @@ export function DiscoveryApp() {
             finish();
             resolve((status.run.result ?? {}) as {
               analysisRunId?: string;
+              targetUsername?: string;
               range?: { label?: string };
               lanes: Lane[];
               summary?: string;
@@ -426,10 +536,9 @@ export function DiscoveryApp() {
           </button>
           <div className="mp-topbar-right">
             <span className="mp-kicker">ACTIVE USER</span>
-            <span className="mp-pill">{username}</span>
-            <button className="mp-link" onClick={disconnect} disabled={busy}>
-              Disconnect
-            </button>
+            <Link href="/profile" className="mp-pill mp-pill-link">
+              {username}
+            </Link>
           </div>
         </header>
       )}
@@ -444,18 +553,24 @@ export function DiscoveryApp() {
             <h1>Discover artists you do not know yet.</h1>
             <p>Recommendations based on what you already love, optimized for what is missing from your history.</p>
             <div className="mp-actions-row">
-              <input
-                className="mp-input"
-                value={usernameInput}
-                onChange={(event) => setUsernameInput(event.target.value)}
-                placeholder="Last.fm username"
-              />
+              {status?.isAuthenticated ? (
+                <button className="mp-button mp-button-primary" onClick={goToRecommendations} disabled={busy}>
+                  Get Recommendations
+                </button>
+              ) : (
+                <button className="mp-button mp-button-primary" onClick={startConnect} disabled={busy}>
+                  Connect Last.fm
+                </button>
+              )}
             </div>
-            <div className="mp-actions-row">
-              <button className="mp-button mp-button-primary" onClick={startConnect} disabled={busy || !usernameInput.trim()}>
-                Begin
-              </button>
-            </div>
+            {status?.isAuthenticated && (
+              <p className="mp-kicker mp-auth-label">
+                Logged in as{" "}
+                <Link href="/profile" className="mp-auth-link">
+                  {username}
+                </Link>
+              </p>
+            )}
           </section>
         </main>
       )}
@@ -570,11 +685,62 @@ export function DiscoveryApp() {
               <button
                 className="mp-button mp-button-primary"
                 onClick={runAnalysis}
-                disabled={busy || status?.status !== "connected" || (selectedRange === "custom" && !customRangeIsValid)}
+                disabled={
+                  busy ||
+                  !status?.isAuthenticated ||
+                  (selectedRange === "custom" && !customRangeIsValid) ||
+                  (targetMode && targetValidationState !== "valid")
+                }
               >
-                Analyze My Taste
+                {targetMode ? "Analyze This User" : "Analyze My Taste"}
               </button>
             </div>
+
+            <div className="mp-actions-row mp-actions-left mp-target-toggle-row">
+              {!targetMode ? (
+                <button className="mp-button mp-button-ghost mp-button-compact" onClick={() => setTargetMode(true)} disabled={busy}>
+                  Analyze a different user
+                </button>
+              ) : (
+                <button className="mp-button mp-button-ghost mp-button-compact" onClick={resetTargetUser} disabled={busy}>
+                  Use my account instead
+                </button>
+              )}
+            </div>
+
+            {targetMode && (
+              <section className="mp-target-user-panel">
+                <label className="mp-kicker" htmlFor="target-username-input">
+                  TARGET LAST.FM USERNAME
+                </label>
+                <div className="mp-target-user-row">
+                  <input
+                    id="target-username-input"
+                    className="mp-input"
+                    value={targetUsernameInput}
+                    onChange={(event) => {
+                      setTargetUsernameInput(event.target.value);
+                      setTargetValidationState("idle");
+                      setTargetValidationMessage(null);
+                      setTargetUsernameResolved(null);
+                    }}
+                    placeholder="username"
+                  />
+                  <button
+                    className="mp-button mp-button-ghost mp-button-compact"
+                    onClick={validateTargetUsername}
+                    disabled={busy || targetValidationState === "validating"}
+                  >
+                    {targetValidationState === "validating" ? "Validating..." : "Validate"}
+                  </button>
+                </div>
+                {targetValidationMessage && (
+                  <p className={`mp-target-note ${targetValidationState === "error" ? "is-error" : ""}`}>
+                    {targetValidationMessage}
+                  </p>
+                )}
+              </section>
+            )}
           </section>
         </main>
       )}
@@ -583,7 +749,7 @@ export function DiscoveryApp() {
         <main className="mp-page mp-analyzing">
           <section className="mp-analyzing-card">
             <p className="mp-kicker mp-pulse">PROCESSING</p>
-            <h2>Analyzing {username}&apos;s listening history...</h2>
+            <h2>Analyzing {displayAnalysisUsername}&apos;s listening history...</h2>
             <div className="mp-status-lines">
               {analyzeSteps.map((step) => (
                 <div key={step.id} className={`mp-status-line is-${step.state}`}>
@@ -606,7 +772,7 @@ export function DiscoveryApp() {
               ← Back to time selection
             </button>
             <p className="mp-kicker">TASTE ANALYSIS</p>
-            <h2>{username}&apos;s Listening Clusters</h2>
+            <h2>{displayAnalysisUsername}&apos;s Listening Clusters</h2>
             {analysisRangeLabel && <p className="mp-muted">Analysis based on listening activity from {analysisRangeLabel.toLowerCase()}.</p>}
             {analysisSummary && <p className="mp-summary">{analysisSummary}</p>}
 
@@ -703,7 +869,8 @@ export function DiscoveryApp() {
               {recommendations.map((rec, idx) => (
                 <article key={rec.artist} className={`mp-rec-card ${idx === 0 ? "is-featured" : ""}`}>
                   <h3>{rec.artist}</h3>
-                  <p>{rec.reason}</p>
+                  <p>{rec.blurb ?? rec.reason ?? "A strong fit for this lane."}</p>
+                  {rec.recommendedAlbum && <small>Start with album: {rec.recommendedAlbum}</small>}
                   <small>Seeded from {rec.matchSource}</small>
                 </article>
               ))}

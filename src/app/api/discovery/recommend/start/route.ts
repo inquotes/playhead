@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/server/db";
 import { launchRecommendRun } from "@/server/agent/jobs";
 import type { Lane } from "@/server/discovery/types";
+import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 const requestSchema = z.object({
@@ -17,19 +18,16 @@ export async function POST(request: Request) {
     const payload = requestSchema.parse(await request.json());
     const context = await getOrCreateVisitorSession();
     const visitorSessionId = context.sessionId;
-
-    const [connection, analysisRun] = await Promise.all([
-      prisma.lastfmConnection.findUnique({ where: { visitorSessionId } }),
-      prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } }),
-    ]);
-
-    if (!connection?.lastfmUsername || connection.status !== "connected") {
+    const userAccount = await getCurrentUserAccount();
+    if (!userAccount) {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before generating recommendations." },
-        { status: 400 },
+        { status: 401 },
       );
       return attachVisitorCookie(response, context);
     }
+
+    const analysisRun = await prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } });
 
     if (!analysisRun) {
       const response = NextResponse.json({ ok: false, message: "Analysis run not found." }, { status: 404 });
@@ -48,10 +46,13 @@ export async function POST(request: Request) {
     }
 
     const timeoutMs = Number(process.env.PIPELINE_TIMEOUT_MS ?? 180_000);
+    const targetUsername = analysisRun.targetLastfmUsername ?? userAccount.lastfmUsername;
 
     const run = await prisma.agentRun.create({
       data: {
         visitorSessionId,
+        userAccountId: userAccount.id,
+        targetLastfmUsername: targetUsername,
         mode: "recommend",
         status: "queued",
         requestJson: payload as Prisma.InputJsonValue,
@@ -63,7 +64,9 @@ export async function POST(request: Request) {
     void launchRecommendRun({
       runId: run.id,
       visitorSessionId,
-      username: connection.lastfmUsername,
+      userAccountId: userAccount.id,
+      username: targetUsername,
+      targetLastfmUsername: targetUsername,
       analysisRunId: payload.analysisRunId,
       laneId: payload.laneId,
       limit: payload.limit,
