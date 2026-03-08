@@ -91,3 +91,20 @@ model AgentRunEvent {
 
   @@index([runId, seq])
 }
+
+model LastfmApiCache {
+  id             String   @id @default(cuid())
+  cacheKey       String   @unique
+  scope          String
+  method         String
+  paramsJson     Json
+  dataJson       Json
+  expiresAt      DateTime
+  hitCount       Int      @default(0)
+  lastAccessedAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([scope, method])
+  @@index([expiresAt])
+}

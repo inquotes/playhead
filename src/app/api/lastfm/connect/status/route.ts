@@ -15,7 +15,7 @@ export async function GET() {
       ok: true,
       status: connection?.status ?? "disconnected",
       lastfmUsername: connection?.lastfmUsername ?? null,
-      hasConnection: Boolean(connection?.mcpSessionId),
+      hasConnection: Boolean(connection?.lastfmUsername),
       lastVerifiedAt: connection?.lastVerifiedAt ?? null,
       authErrorCode: connection?.authErrorCode ?? null,
     });

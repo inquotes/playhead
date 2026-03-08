@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
+import { buildListeningSnapshot, synthesizeTasteLanes } from "@/server/discovery/pipeline";
 import { resolveRange } from "@/server/discovery/range";
-import { callLastfmTool } from "@/server/lastfm/mcp";
-import { parseWeeklyArtistChart } from "@/server/lastfm/parsers";
-import { coerceLaneIds, runAnalyzeAgent } from "@/server/agent/runner";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 const requestSchema = z.object({
@@ -23,7 +22,7 @@ export async function POST(request: Request) {
       where: { visitorSessionId },
     });
 
-    if (!connection?.mcpSessionId || connection.status !== "connected") {
+    if (!connection?.lastfmUsername || connection.status !== "connected") {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before running analysis." },
         { status: 400 },
@@ -32,41 +31,32 @@ export async function POST(request: Request) {
     }
 
     const range = resolveRange(payload);
-    const artistSeedResult = await callLastfmTool(connection.mcpSessionId, "get_weekly_artist_chart", {
-      from: range.from,
-      to: range.to,
-    });
-    const topArtists = parseWeeklyArtistChart(artistSeedResult.text);
-    const heardArtistsSeed = [...new Set(topArtists.map((artist) => artist.artist.trim()))].slice(0, 200);
 
-    const agentResult = await runAnalyzeAgent({
-      mcpSessionId: connection.mcpSessionId,
-      rangeLabel: range.label,
-      rangeStart: range.from,
-      rangeEnd: range.to,
-      heardArtistsSeed,
-      maxToolCalls: 10,
+    const snapshot = await buildListeningSnapshot({
+      username: connection.lastfmUsername,
+      timeWindow: {
+        preset: payload.preset,
+        from: range.from,
+        to: range.to,
+        label: range.label,
+      },
     });
 
-    const lanes = coerceLaneIds(agentResult.output.lanes);
-    const heardArtists =
-      agentResult.output.heardArtists.length > 0 ? agentResult.output.heardArtists : heardArtistsSeed;
-    const traceJson = JSON.parse(JSON.stringify(agentResult.trace));
+    const laneResult = await synthesizeTasteLanes(snapshot);
 
     const run = await prisma.analysisRun.create({
       data: {
         visitorSessionId,
         rangeStart: range.from,
         rangeEnd: range.to,
-        sourceVersion: "agentic-v1",
-        artistsJson: topArtists,
-        tracksJson: [],
-        heardArtistsJson: heardArtists,
+        sourceVersion: "api-first-v1",
+        artistsJson: snapshot.topArtists,
+        tracksJson: (snapshot.metadata?.topTracks ?? []) as Prisma.InputJsonValue,
+        heardArtistsJson: snapshot.knownArtists.map((artist) => artist.artistName),
         lanesJson: {
-          summary: agentResult.output.summary,
-          notablePatterns: agentResult.output.notablePatterns,
-          lanes,
-          trace: traceJson,
+          summary: laneResult.summary,
+          notablePatterns: laneResult.notablePatterns,
+          lanes: laneResult.lanes,
         },
       },
     });
@@ -75,21 +65,19 @@ export async function POST(request: Request) {
       ok: true,
       analysisRunId: run.id,
       range,
-      laneCount: lanes.length,
-      summary: agentResult.output.summary,
-      notablePatterns: agentResult.output.notablePatterns,
-      lanes,
-      topArtists: topArtists.slice(0, 10),
-      trace: traceJson,
+      laneCount: laneResult.lanes.length,
+      summary: laneResult.summary,
+      notablePatterns: laneResult.notablePatterns,
+      lanes: laneResult.lanes,
+      topArtists: snapshot.topArtists.slice(0, 12),
+      trace: {
+        pipeline: "api-first-v1",
+        dataSource: "official-lastfm-api",
+      },
     });
     return attachVisitorCookie(response, context);
   } catch (error) {
-    const message =
-      error instanceof z.ZodError
-        ? "The model returned an invalid analysis shape. Please retry."
-        : error instanceof Error
-          ? error.message
-          : "Analysis failed.";
+    const message = error instanceof Error ? error.message : "Analysis failed.";
     return NextResponse.json({ ok: false, message }, { status: 500 });
   }
 }

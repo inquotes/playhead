@@ -2,9 +2,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
-import { getAgentMaxToolCalls, getAgentTimeoutMs } from "@/server/agent/config";
 import { launchRecommendRun } from "@/server/agent/jobs";
-import { RECOMMENDATION_LIMIT_BOUNDS } from "@/server/agent/runner";
 import type { Lane } from "@/server/discovery/types";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -12,7 +10,7 @@ const requestSchema = z.object({
   analysisRunId: z.string().min(1),
   laneId: z.string().min(1),
   newPreferred: z.boolean().default(true),
-  limit: RECOMMENDATION_LIMIT_BOUNDS.default(5),
+  limit: z.number().int().min(1).max(8).default(4),
 });
 
 export async function POST(request: Request) {
@@ -26,7 +24,7 @@ export async function POST(request: Request) {
       prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } }),
     ]);
 
-    if (!connection?.mcpSessionId || connection.status !== "connected") {
+    if (!connection?.lastfmUsername || connection.status !== "connected") {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before generating recommendations." },
         { status: 400 },
@@ -50,8 +48,7 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const maxToolCalls = getAgentMaxToolCalls("recommend");
-    const timeoutMs = getAgentTimeoutMs("recommend");
+    const timeoutMs = Number(process.env.PIPELINE_TIMEOUT_MS ?? 180_000);
 
     const run = await prisma.agentRun.create({
       data: {
@@ -59,7 +56,7 @@ export async function POST(request: Request) {
         mode: "recommend",
         status: "queued",
         requestJson: payload as Prisma.InputJsonValue,
-        maxToolCalls,
+        maxToolCalls: 0,
         timeoutMs,
       },
     });
@@ -67,7 +64,7 @@ export async function POST(request: Request) {
     void launchRecommendRun({
       runId: run.id,
       visitorSessionId,
-      mcpSessionId: connection.mcpSessionId,
+      username: connection.lastfmUsername,
       analysisRunId: payload.analysisRunId,
       laneId: payload.laneId,
       newPreferred: payload.newPreferred,
@@ -78,7 +75,7 @@ export async function POST(request: Request) {
       ok: true,
       runId: run.id,
       mode: "recommend",
-      maxToolCalls,
+      maxToolCalls: 0,
       timeoutMs,
     });
     return attachVisitorCookie(response, context);

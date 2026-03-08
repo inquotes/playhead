@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
-import { getAgentMaxToolCalls, getAgentTimeoutMs } from "@/server/agent/config";
 import { launchAnalyzeRun } from "@/server/agent/jobs";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -22,7 +21,7 @@ export async function POST(request: Request) {
       where: { visitorSessionId },
     });
 
-    if (!connection?.mcpSessionId || connection.status !== "connected") {
+    if (!connection?.lastfmUsername || connection.status !== "connected") {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before running analysis." },
         { status: 400 },
@@ -30,8 +29,7 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const maxToolCalls = getAgentMaxToolCalls("analyze");
-    const timeoutMs = getAgentTimeoutMs("analyze");
+    const timeoutMs = Number(process.env.PIPELINE_TIMEOUT_MS ?? 180_000);
 
     const run = await prisma.agentRun.create({
       data: {
@@ -39,7 +37,7 @@ export async function POST(request: Request) {
         mode: "analyze",
         status: "queued",
         requestJson: payload as Prisma.InputJsonValue,
-        maxToolCalls,
+        maxToolCalls: 0,
         timeoutMs,
       },
     });
@@ -47,7 +45,7 @@ export async function POST(request: Request) {
     void launchAnalyzeRun({
       runId: run.id,
       visitorSessionId,
-      mcpSessionId: connection.mcpSessionId,
+      username: connection.lastfmUsername,
       preset: payload.preset,
       from: payload.from,
       to: payload.to,
@@ -57,7 +55,7 @@ export async function POST(request: Request) {
       ok: true,
       runId: run.id,
       mode: "analyze",
-      maxToolCalls,
+      maxToolCalls: 0,
       timeoutMs,
     });
     return attachVisitorCookie(response, context);

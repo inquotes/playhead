@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/server/db";
-import { callLastfmTool } from "@/server/lastfm/mcp";
-import { parseAuthStatus } from "@/server/lastfm/parsers";
+import { validateLastfmUser } from "@/server/lastfm/service";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 export async function POST() {
@@ -13,40 +12,21 @@ export async function POST() {
       where: { visitorSessionId },
     });
 
-    if (!connection?.mcpSessionId) {
+    if (!connection?.lastfmUsername) {
       const response = NextResponse.json(
-        { ok: false, message: "No Last.fm connection has been started for this session." },
+        { ok: false, message: "No Last.fm username configured for this session." },
         { status: 400 },
       );
       return attachVisitorCookie(response, context);
     }
 
-    const auth = await callLastfmTool(connection.mcpSessionId, "lastfm_auth_status", {});
-    const parsed = parseAuthStatus(auth.text);
-
-    if (!parsed.authenticated) {
-      await prisma.lastfmConnection.update({
-        where: { visitorSessionId },
-        data: {
-          status: "pending",
-          authErrorCode: "not_authenticated",
-          lastVerifiedAt: new Date(),
-        },
-      });
-
-      const response = NextResponse.json({
-        ok: true,
-        status: "pending",
-        authenticated: false,
-      });
-      return attachVisitorCookie(response, context);
-    }
+    await validateLastfmUser(connection.lastfmUsername);
 
     await prisma.lastfmConnection.update({
       where: { visitorSessionId },
       data: {
         status: "connected",
-        lastfmUsername: parsed.username,
+        lastfmUsername: connection.lastfmUsername,
         authErrorCode: null,
         lastVerifiedAt: new Date(),
       },
@@ -55,8 +35,7 @@ export async function POST() {
     const response = NextResponse.json({
       ok: true,
       status: "connected",
-      authenticated: true,
-      lastfmUsername: parsed.username,
+      lastfmUsername: connection.lastfmUsername,
     });
     return attachVisitorCookie(response, context);
   } catch (error) {

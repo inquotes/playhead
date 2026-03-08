@@ -1,34 +1,43 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/server/db";
-import { buildLastfmLoginUrl, createMcpSessionId } from "@/server/lastfm/mcp";
+import { validateLastfmUser } from "@/server/lastfm/service";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
-export async function POST() {
+const requestSchema = z.object({
+  username: z.string().min(1),
+});
+
+export async function POST(request: Request) {
   try {
+    const payload = requestSchema.parse(await request.json());
+    const username = payload.username.trim();
+
     const context = await getOrCreateVisitorSession();
     const visitorSessionId = context.sessionId;
 
-    const mcpSessionId = createMcpSessionId();
-    const loginUrl = buildLastfmLoginUrl(mcpSessionId);
+    await validateLastfmUser(username);
 
     await prisma.lastfmConnection.upsert({
       where: { visitorSessionId },
       create: {
         visitorSessionId,
-        mcpSessionId,
-        status: "pending",
+        status: "connected",
+        lastfmUsername: username,
+        lastVerifiedAt: new Date(),
       },
       update: {
-        mcpSessionId,
-        status: "pending",
+        status: "connected",
+        lastfmUsername: username,
         authErrorCode: null,
+        lastVerifiedAt: new Date(),
       },
     });
 
     const response = NextResponse.json({
       ok: true,
-      loginUrl,
-      status: "pending",
+      status: "connected",
+      lastfmUsername: username,
     });
 
     return attachVisitorCookie(response, context);

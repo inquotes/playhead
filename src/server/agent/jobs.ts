@@ -1,56 +1,13 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/db";
-import { getAgentMaxToolCalls, getAgentTimeoutMs } from "@/server/agent/config";
 import { publishAgentRunEvent } from "@/server/agent/events";
-import { coerceLaneIds, runAnalyzeAgent, runRecommendAgent, sanitizeRecommendations } from "@/server/agent/runner";
-import { resolveRange, type RangePreset } from "@/server/discovery/range";
-import { generateRecommendations } from "@/server/discovery/recommender";
+import { type RangePreset, resolveRange } from "@/server/discovery/range";
+import {
+  buildListeningSnapshot,
+  generateDeterministicRecommendations,
+  synthesizeTasteLanes,
+} from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
-import { callLastfmTool } from "@/server/lastfm/mcp";
-import { parseWeeklyArtistChart } from "@/server/lastfm/parsers";
-
-function normalizeArtist(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function enrichAnalyzeLanesWithPlayTotals(
-  lanes: ReturnType<typeof coerceLaneIds>,
-  topArtists: Array<{ artist: string; plays: number }>,
-): ReturnType<typeof coerceLaneIds> {
-  const playMap = new Map(topArtists.map((item) => [normalizeArtist(item.artist), item.plays]));
-
-  return lanes.map((lane) => {
-    const knownLaneArtists = lane.artists
-      .map((name) => name.trim())
-      .filter((name) => name.length > 0 && !/^unknown artist/i.test(name))
-      .filter((name) => playMap.has(normalizeArtist(name)));
-
-    const contextText = [
-      lane.name,
-      lane.description,
-      lane.whyThisLane,
-      lane.tags.join(" "),
-      lane.evidence.join(" "),
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    const contextualArtists = topArtists
-      .map((item) => item.artist)
-      .filter((artist) => contextText.includes(artist.toLowerCase()))
-      .slice(0, 4);
-
-    const artists = knownLaneArtists.length > 0 ? knownLaneArtists : contextualArtists;
-
-    const totalFromMap = artists.reduce((sum, artist) => sum + (playMap.get(normalizeArtist(artist)) ?? 0), 0);
-
-    return {
-      ...lane,
-      artists,
-      totalPlays: totalFromMap > 0 ? totalFromMap : lane.totalPlays,
-    };
-  });
-}
 
 type RunEventAppender = (event: {
   type: string;
@@ -106,7 +63,7 @@ async function markRunFailed(runId: string, message: string, appendRunEvent: Run
 export async function launchAnalyzeRun(params: {
   runId: string;
   visitorSessionId: string;
-  mcpSessionId: string;
+  username: string;
   preset: RangePreset;
   from?: number;
   to?: number;
@@ -129,61 +86,77 @@ export async function launchAnalyzeRun(params: {
     });
 
     await appendRunEvent({
-      type: "analysis_seed_fetch_started",
+      type: "snapshot_started",
       payload: {
+        username: params.username,
         range,
-        message: "Fetching artist listening window.",
+        message: "Fetching and normalizing direct Last.fm listening data.",
       },
     });
 
-    const artistSeedResult = await callLastfmTool(params.mcpSessionId, "get_weekly_artist_chart", {
-      from: range.from,
-      to: range.to,
+    const snapshot = await buildListeningSnapshot({
+      username: params.username,
+      timeWindow: {
+        preset: params.preset,
+        from: range.from,
+        to: range.to,
+        label: range.label,
+      },
     });
-
-    const topArtists = parseWeeklyArtistChart(artistSeedResult.text);
-    const heardArtistsSeed = [...new Set(topArtists.map((artist) => artist.artist.trim()))].slice(0, 200);
 
     await appendRunEvent({
-      type: "analysis_seed_fetch_completed",
+      type: "snapshot_completed",
       payload: {
-        topArtistsCount: topArtists.length,
-        message: `Fetched weekly artist chart (${topArtists.length} artists).`,
+        artistCount: snapshot.topArtists.length,
+        profileCount: snapshot.artistProfiles.length,
+        knownArtistCount: snapshot.knownArtists.length,
+        message: `Snapshot ready (${snapshot.topArtists.length} artists, ${snapshot.knownArtists.length} known-history artists).`,
       },
     });
 
-    const maxToolCalls = getAgentMaxToolCalls("analyze");
-    const timeoutMs = getAgentTimeoutMs("analyze");
-
-    const agentResult = await runAnalyzeAgent({
-      mcpSessionId: params.mcpSessionId,
-      rangeLabel: range.label,
-      rangeStart: range.from,
-      rangeEnd: range.to,
-      heardArtistsSeed,
-      maxToolCalls,
-      timeoutMs,
-      onEvent: (event) => appendRunEvent({ type: event.type, payload: event.payload }),
+    await appendRunEvent({
+      type: "lane_synthesis_started",
+      payload: {
+        message: "Generating taste lanes from normalized artist-level evidence.",
+      },
     });
 
-    const lanes = enrichAnalyzeLanesWithPlayTotals(coerceLaneIds(agentResult.output.lanes), topArtists);
-    const heardArtists =
-      agentResult.output.heardArtists.length > 0 ? agentResult.output.heardArtists : heardArtistsSeed;
-    const traceJson = JSON.parse(JSON.stringify(agentResult.trace));
+    const laneResult = await synthesizeTasteLanes(snapshot);
+
+    await appendRunEvent({
+      type: "lane_synthesis_completed",
+      payload: {
+        laneCount: laneResult.lanes.length,
+        message: `Generated ${laneResult.lanes.length} taste lanes.`,
+      },
+    });
+
+    const heardArtists = snapshot.knownArtists.map((item) => item.artistName);
+    const traceJson = {
+      pipeline: "api-first-v1",
+      dataSource: "official-lastfm-api",
+      modelRole: "lane-synthesis-only",
+      cacheEnabled: true,
+      counts: {
+        topArtists: snapshot.topArtists.length,
+        artistProfiles: snapshot.artistProfiles.length,
+        knownArtists: snapshot.knownArtists.length,
+      },
+    };
 
     const analysisRun = await prisma.analysisRun.create({
       data: {
         visitorSessionId: params.visitorSessionId,
         rangeStart: range.from,
         rangeEnd: range.to,
-        sourceVersion: "agentic-v2-stream",
-        artistsJson: topArtists as Prisma.InputJsonValue,
-        tracksJson: [] as Prisma.InputJsonValue,
+        sourceVersion: "api-first-v1",
+        artistsJson: snapshot.topArtists as Prisma.InputJsonValue,
+        tracksJson: (snapshot.metadata?.topTracks ?? []) as Prisma.InputJsonValue,
         heardArtistsJson: heardArtists as Prisma.InputJsonValue,
         lanesJson: {
-          summary: agentResult.output.summary,
-          notablePatterns: agentResult.output.notablePatterns,
-          lanes,
+          summary: laneResult.summary,
+          notablePatterns: laneResult.notablePatterns,
+          lanes: laneResult.lanes,
           trace: traceJson,
         } as Prisma.InputJsonValue,
       },
@@ -192,11 +165,11 @@ export async function launchAnalyzeRun(params: {
     const resultJson = {
       analysisRunId: analysisRun.id,
       range,
-      laneCount: lanes.length,
-      summary: agentResult.output.summary,
-      notablePatterns: agentResult.output.notablePatterns,
-      lanes,
-      topArtists: topArtists.slice(0, 10),
+      laneCount: laneResult.lanes.length,
+      summary: laneResult.summary,
+      notablePatterns: laneResult.notablePatterns,
+      lanes: laneResult.lanes,
+      topArtists: snapshot.topArtists.slice(0, 12),
       trace: traceJson,
     } as Prisma.InputJsonValue;
 
@@ -205,10 +178,9 @@ export async function launchAnalyzeRun(params: {
       data: {
         status: "completed",
         completedAt: new Date(),
-        terminationReason: agentResult.trace.terminationReason,
-        toolCallsUsed: agentResult.trace.toolCallsUsed,
-        maxToolCalls: agentResult.trace.maxToolCalls,
-        timeoutMs,
+        terminationReason: "final",
+        toolCallsUsed: 0,
+        maxToolCalls: 0,
         resultJson,
       },
     });
@@ -217,7 +189,7 @@ export async function launchAnalyzeRun(params: {
       type: "run_completed",
       payload: {
         analysisRunId: analysisRun.id,
-        message: "Analyze run completed.",
+        message: "Analysis run completed via API-first deterministic pipeline.",
       },
     });
   } catch (error) {
@@ -229,36 +201,10 @@ export async function launchAnalyzeRun(params: {
   }
 }
 
-function preferNewerOrder<T extends { isLikelyNewEra: boolean }>(
-  recommendations: T[],
-  enabled: boolean,
-  limit: number,
-): T[] {
-  if (!enabled) return recommendations.slice(0, limit);
-
-  const newer = recommendations.filter((item) => item.isLikelyNewEra);
-  const older = recommendations.filter((item) => !item.isLikelyNewEra);
-  const minNewer = Math.ceil(limit * 0.6);
-  const pickNewer = Math.min(newer.length, minNewer);
-  const selected = [...newer.slice(0, pickNewer), ...older.slice(0, Math.max(0, limit - pickNewer))];
-
-  if (selected.length >= limit) return selected.slice(0, limit);
-
-  const used = new Set(selected.map((item) => JSON.stringify(item)));
-  for (const item of recommendations) {
-    if (selected.length >= limit) break;
-    const key = JSON.stringify(item);
-    if (used.has(key)) continue;
-    selected.push(item);
-  }
-
-  return selected.slice(0, limit);
-}
-
 export async function launchRecommendRun(params: {
   runId: string;
   visitorSessionId: string;
-  mcpSessionId: string;
+  username: string;
   analysisRunId: string;
   laneId: string;
   newPreferred: boolean;
@@ -296,77 +242,57 @@ export async function launchRecommendRun(params: {
       throw new Error("Lane not found.");
     }
 
-    const heardArtists = analysisRun.heardArtistsJson as unknown as string[];
+    await appendRunEvent({
+      type: "recommendation_snapshot_started",
+      payload: {
+        message: "Refreshing cached listening snapshot before deterministic recommendation expansion.",
+      },
+    });
 
-    const maxToolCalls = getAgentMaxToolCalls("recommend");
-    const timeoutMs = getAgentTimeoutMs("recommend");
+    const snapshot = await buildListeningSnapshot({
+      username: params.username,
+      timeWindow: {
+        preset: "custom",
+        from: analysisRun.rangeStart,
+        to: analysisRun.rangeEnd,
+        label: "Selected analysis window",
+      },
+    });
 
-    let strategyNote = "";
-    let recommendations: Awaited<ReturnType<typeof generateRecommendations>> = [];
-    let traceJson: Record<string, unknown> | null = null;
+    await appendRunEvent({
+      type: "recommendation_expansion_started",
+      payload: {
+        laneId: selectedLane.id,
+        laneName: selectedLane.name,
+        message: "Expanding lane seeds through similar-artist graph and ranking candidates deterministically.",
+      },
+    });
 
-    try {
-      const agentResult = await runRecommendAgent({
-        mcpSessionId: params.mcpSessionId,
-        lane: selectedLane,
-        heardArtists,
-        newPreferred: params.newPreferred,
-        limit: params.limit,
-        maxToolCalls,
-        timeoutMs,
-        onEvent: (event) => appendRunEvent({ type: event.type, payload: event.payload }),
-      });
+    const recommendationResult = await generateDeterministicRecommendations({
+      username: params.username,
+      lane: selectedLane,
+      snapshot,
+      limit: params.limit,
+      newPreferred: params.newPreferred,
+    });
 
-      recommendations = sanitizeRecommendations(
-        agentResult.output.recommendations,
-        heardArtists,
-        params.limit,
-        params.newPreferred,
-      );
-      strategyNote = agentResult.output.strategyNote;
-      traceJson = JSON.parse(JSON.stringify(agentResult.trace)) as Record<string, unknown>;
-    } catch {
-      const fallback = await generateRecommendations({
-        mcpSessionId: params.mcpSessionId,
-        lane: selectedLane,
-        heardArtists,
-        newOnly: false,
-        limit: Math.max(params.limit * 2, 10),
-      });
+    await appendRunEvent({
+      type: "recommendation_expansion_completed",
+      payload: {
+        candidateCount: recommendationResult.candidates.length,
+        selectedCount: recommendationResult.recommendations.length,
+        message: `Ranked ${recommendationResult.candidates.length} candidates and selected ${recommendationResult.recommendations.length}.`,
+      },
+    });
 
-      recommendations = preferNewerOrder(fallback, params.newPreferred, params.limit);
-      strategyNote = "Fallback recommendation mode used due to invalid model output shape.";
-      traceJson = {
-        toolCallsUsed: 0,
-        maxToolCalls,
-        terminationReason: "error",
-        steps: [
-          {
-            index: 1,
-            toolName: "fallback_deterministic_recommender",
-            arguments: {},
-            status: "success",
-            durationMs: 0,
-            preview: "Used deterministic recommender fallback after agent output validation failure.",
-          },
-        ],
-      };
-
-      await appendRunEvent({
-        type: "fallback_recommender_used",
-        payload: {
-          reason: "invalid_agent_output_shape",
-          message: "Used deterministic fallback recommender due to invalid agent output shape.",
-        },
-      });
-    }
-
-    const traceSafe = JSON.parse(JSON.stringify(traceJson)) as Record<string, unknown> | null;
-    const resultsJson = {
-      strategyNote,
-      recommendations,
-      trace: traceSafe,
-    } as Prisma.InputJsonValue;
+    const traceJson = {
+      pipeline: "api-first-v1",
+      dataSource: "official-lastfm-api",
+      candidateCount: recommendationResult.candidates.length,
+      selectedCount: recommendationResult.recommendations.length,
+      deterministicRanking: true,
+      llmRole: "explanations-only",
+    };
 
     const recommendationRun = await prisma.recommendationRun.create({
       data: {
@@ -374,16 +300,21 @@ export async function launchRecommendRun(params: {
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
         newOnly: params.newPreferred,
-        resultsJson,
+        resultsJson: {
+          strategyNote: recommendationResult.strategyNote,
+          recommendations: recommendationResult.recommendations,
+          candidates: recommendationResult.candidates,
+          trace: traceJson,
+        } as Prisma.InputJsonValue,
       },
     });
 
     const resultJson = {
       recommendationRunId: recommendationRun.id,
-      strategyNote,
+      strategyNote: recommendationResult.strategyNote,
       lane: selectedLane,
-      recommendations,
-      trace: traceSafe,
+      recommendations: recommendationResult.recommendations,
+      trace: traceJson,
     } as Prisma.InputJsonValue;
 
     await prisma.agentRun.update({
@@ -391,10 +322,9 @@ export async function launchRecommendRun(params: {
       data: {
         status: "completed",
         completedAt: new Date(),
-        terminationReason: (traceSafe?.terminationReason as string | undefined) ?? "final",
-        toolCallsUsed: Number((traceSafe?.toolCallsUsed as number | undefined) ?? 0),
-        maxToolCalls: Number((traceSafe?.maxToolCalls as number | undefined) ?? maxToolCalls),
-        timeoutMs,
+        terminationReason: "final",
+        toolCallsUsed: 0,
+        maxToolCalls: 0,
         resultJson,
       },
     });
@@ -403,7 +333,7 @@ export async function launchRecommendRun(params: {
       type: "run_completed",
       payload: {
         recommendationRunId: recommendationRun.id,
-        message: "Recommendation run completed.",
+        message: "Recommendation run completed via deterministic API-first pipeline.",
       },
     });
   } catch (error) {

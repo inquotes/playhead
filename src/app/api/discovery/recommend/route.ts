@@ -1,47 +1,17 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { prisma } from "@/server/db";
-import { RECOMMENDATION_LIMIT_BOUNDS, runRecommendAgent, sanitizeRecommendations } from "@/server/agent/runner";
+import { buildListeningSnapshot, generateDeterministicRecommendations } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
-import { generateRecommendations } from "@/server/discovery/recommender";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 const requestSchema = z.object({
   analysisRunId: z.string().min(1),
   laneId: z.string().min(1),
   newPreferred: z.boolean().default(true),
-  limit: RECOMMENDATION_LIMIT_BOUNDS.default(5),
+  limit: z.number().int().min(1).max(8).default(4),
 });
-
-function preferNewerOrder<T extends { isLikelyNewEra: boolean }>(
-  recommendations: T[],
-  enabled: boolean,
-  limit: number,
-): T[] {
-  if (!enabled) {
-    return recommendations.slice(0, limit);
-  }
-
-  const newer = recommendations.filter((item) => item.isLikelyNewEra);
-  const older = recommendations.filter((item) => !item.isLikelyNewEra);
-  const minNewer = Math.ceil(limit * 0.6);
-  const pickNewer = Math.min(newer.length, minNewer);
-
-  const combined = [...newer.slice(0, pickNewer), ...older.slice(0, Math.max(0, limit - pickNewer))];
-  if (combined.length >= limit) {
-    return combined.slice(0, limit);
-  }
-
-  const used = new Set(combined.map((item) => JSON.stringify(item)));
-  for (const item of recommendations) {
-    if (combined.length >= limit) break;
-    const key = JSON.stringify(item);
-    if (used.has(key)) continue;
-    combined.push(item);
-  }
-  return combined.slice(0, limit);
-}
 
 export async function POST(request: Request) {
   try {
@@ -54,7 +24,7 @@ export async function POST(request: Request) {
       prisma.analysisRun.findFirst({ where: { id: payload.analysisRunId, visitorSessionId } }),
     ]);
 
-    if (!connection?.mcpSessionId || connection.status !== "connected") {
+    if (!connection?.lastfmUsername || connection.status !== "connected") {
       const response = NextResponse.json(
         { ok: false, message: "Connect Last.fm before generating recommendations." },
         { status: 400 },
@@ -78,65 +48,23 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const heardArtists = analysisRun.heardArtistsJson as unknown as string[];
-    let strategyNote = "";
-    let recommendations: Awaited<ReturnType<typeof generateRecommendations>> = [];
-    let traceJson: Record<string, unknown> | null = null;
+    const snapshot = await buildListeningSnapshot({
+      username: connection.lastfmUsername,
+      timeWindow: {
+        preset: "custom",
+        from: analysisRun.rangeStart,
+        to: analysisRun.rangeEnd,
+        label: "Selected analysis window",
+      },
+    });
 
-    try {
-      const agentResult = await runRecommendAgent({
-        mcpSessionId: connection.mcpSessionId,
-        lane: selectedLane,
-        heardArtists,
-        newPreferred: payload.newPreferred,
-        limit: payload.limit,
-        maxToolCalls: 10,
-      });
-
-      recommendations = sanitizeRecommendations(
-        agentResult.output.recommendations,
-        heardArtists,
-        payload.limit,
-        payload.newPreferred,
-      );
-      strategyNote = agentResult.output.strategyNote;
-      traceJson = JSON.parse(JSON.stringify(agentResult.trace)) as Record<string, unknown>;
-    } catch {
-      const fallback = await generateRecommendations({
-        mcpSessionId: connection.mcpSessionId,
-        lane: selectedLane,
-        heardArtists,
-        newOnly: false,
-        limit: Math.max(payload.limit * 2, 10),
-      });
-
-      recommendations = preferNewerOrder(fallback, payload.newPreferred, payload.limit);
-      strategyNote = "Fallback recommendation mode used due to invalid model output shape.";
-      traceJson = {
-        toolCallsUsed: 0,
-        maxToolCalls: 10,
-        terminationReason: "error",
-        steps: [
-          {
-            index: 1,
-            toolName: "fallback_deterministic_recommender",
-            arguments: {},
-            status: "success",
-            durationMs: 0,
-            preview: "Used deterministic recommender fallback after agent output validation failure.",
-          },
-        ],
-      };
-    }
-
-    const traceSafe = JSON.parse(JSON.stringify(traceJson)) as Record<string, unknown> | null;
-    const resultsJson = JSON.parse(
-      JSON.stringify({
-        strategyNote,
-        recommendations,
-        trace: traceSafe,
-      }),
-    ) as Prisma.InputJsonValue;
+    const recommendationResult = await generateDeterministicRecommendations({
+      username: connection.lastfmUsername,
+      lane: selectedLane,
+      snapshot,
+      limit: payload.limit,
+      newPreferred: payload.newPreferred,
+    });
 
     const recommendationRun = await prisma.recommendationRun.create({
       data: {
@@ -144,26 +72,34 @@ export async function POST(request: Request) {
         analysisRunId: analysisRun.id,
         selectedLane: selectedLane.id,
         newOnly: payload.newPreferred,
-        resultsJson,
+        resultsJson: {
+          strategyNote: recommendationResult.strategyNote,
+          recommendations: recommendationResult.recommendations,
+          candidates: recommendationResult.candidates,
+          trace: {
+            pipeline: "api-first-v1",
+            dataSource: "official-lastfm-api",
+            deterministicRanking: true,
+            llmRole: "explanations-only",
+          },
+        } as Prisma.InputJsonValue,
       },
     });
 
     const response = NextResponse.json({
       ok: true,
       recommendationRunId: recommendationRun.id,
-      strategyNote,
+      strategyNote: recommendationResult.strategyNote,
       lane: selectedLane,
-      recommendations,
-      trace: traceSafe,
+      recommendations: recommendationResult.recommendations,
+      trace: {
+        pipeline: "api-first-v1",
+        candidateCount: recommendationResult.candidates.length,
+      },
     });
     return attachVisitorCookie(response, context);
   } catch (error) {
-    const message =
-      error instanceof z.ZodError
-        ? "The model returned an invalid recommendation shape. Please retry."
-        : error instanceof Error
-          ? error.message
-          : "Recommendation generation failed.";
+    const message = error instanceof Error ? error.message : "Recommendation generation failed.";
     return NextResponse.json({ ok: false, message }, { status: 500 });
   }
 }

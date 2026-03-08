@@ -40,10 +40,13 @@ type AgentTraceStep = {
 };
 
 type AgentTrace = {
-  toolCallsUsed: number;
-  maxToolCalls: number;
-  terminationReason: "final" | "budget_exhausted" | "timeout" | "error";
-  steps: AgentTraceStep[];
+  toolCallsUsed?: number;
+  maxToolCalls?: number;
+  terminationReason?: "final" | "budget_exhausted" | "timeout" | "error";
+  steps?: AgentTraceStep[];
+  pipeline?: string;
+  dataSource?: string;
+  candidateCount?: number;
 };
 
 type AgentRun = {
@@ -115,6 +118,7 @@ export function DiscoveryApp() {
   const [newPreferred, setNewPreferred] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usernameInput, setUsernameInput] = useState("");
   const [progress, setProgress] = useState(0);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [liveEvents, setLiveEvents] = useState<AgentLiveEvent[]>([]);
@@ -131,6 +135,9 @@ export function DiscoveryApp() {
       await jsonFetch<{ ok: true }>("/api/session");
       const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/lastfm/connect/status");
       setStatus(nextStatus);
+      if (nextStatus.lastfmUsername) {
+        setUsernameInput(nextStatus.lastfmUsername);
+      }
       if (nextStatus.status === "connected") {
         setView("time-select");
       }
@@ -143,15 +150,22 @@ export function DiscoveryApp() {
     setBusy(true);
     setError(null);
     try {
-      const result = await jsonFetch<{ ok: true; loginUrl: string }>("/api/lastfm/connect/start", {
+      const result = await jsonFetch<{ ok: true; status: string; lastfmUsername?: string }>("/api/lastfm/connect/start", {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ username: usernameInput.trim() }),
       });
-      window.location.href = result.loginUrl;
+      if (result.status === "connected") {
+        const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/lastfm/connect/status");
+        setStatus(nextStatus);
+        setView("time-select");
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start Last.fm connection.");
+      setError(err instanceof Error ? err.message : "Could not connect Last.fm username.");
       setBusy(false);
+      return;
     }
+
+    setBusy(false);
   }
 
   async function verifyConnect() {
@@ -254,9 +268,9 @@ export function DiscoveryApp() {
           analysisRunId,
           laneId: selectedLaneId,
           newPreferred,
-          limit: 5,
-        }),
-      });
+            limit: 4,
+          }),
+        });
 
       setActiveRunId(start.runId);
       setLiveEvents([]);
@@ -383,15 +397,21 @@ export function DiscoveryApp() {
           <section className="mp-landing-card">
             <p className="mp-kicker">LISTENING ANALYSIS CONSOLE</p>
             <h1>Discover artists you do not know yet.</h1>
-            <p>
-              We analyze your Last.fm patterns, split your taste into lanes, and recommend artists that fit a lane but are missing from your history.
-            </p>
+            <p>We build deterministic recommendations from your Last.fm history, then use AI only to label lanes and explain why picks fit.</p>
             <div className="mp-actions-row">
-              <button className="mp-button mp-button-primary" onClick={startConnect} disabled={busy}>
-                Connect Last.fm
+              <input
+                className="mp-input"
+                value={usernameInput}
+                onChange={(event) => setUsernameInput(event.target.value)}
+                placeholder="Last.fm username"
+              />
+            </div>
+            <div className="mp-actions-row">
+              <button className="mp-button mp-button-primary" onClick={startConnect} disabled={busy || !usernameInput.trim()}>
+                Connect Username
               </button>
               <button className="mp-button mp-button-ghost" onClick={verifyConnect} disabled={busy}>
-                I finished login, verify
+                Re-verify
               </button>
             </div>
           </section>
@@ -476,21 +496,9 @@ export function DiscoveryApp() {
             {analysisTrace && (
               <details className="mp-trace">
                 <summary>
-                  Agent trace: {analysisTrace.toolCallsUsed}/{analysisTrace.maxToolCalls} tools, {analysisTrace.terminationReason}
+                  Run trace: {analysisTrace.pipeline ?? "pipeline"}
                 </summary>
-                <div className="mp-trace-list">
-                  {analysisTrace.steps.map((step) => (
-                    <div key={`${step.index}-${step.toolName}`} className="mp-trace-item">
-                      <strong>
-                        {step.index}. {step.toolName}
-                      </strong>
-                      <span>
-                        {step.status} · {step.durationMs}ms
-                      </span>
-                      <p>{step.preview}</p>
-                    </div>
-                  ))}
-                </div>
+                <p className="mp-muted">Data source: {analysisTrace.dataSource ?? "official-lastfm-api"}</p>
               </details>
             )}
             <div className="mp-divider" />
@@ -586,21 +594,9 @@ export function DiscoveryApp() {
             {recommendationTrace && (
               <details className="mp-trace">
                 <summary>
-                  Agent trace: {recommendationTrace.toolCallsUsed}/{recommendationTrace.maxToolCalls} tools, {recommendationTrace.terminationReason}
+                  Run trace: {recommendationTrace.pipeline ?? "pipeline"}
                 </summary>
-                <div className="mp-trace-list">
-                  {recommendationTrace.steps.map((step) => (
-                    <div key={`${step.index}-${step.toolName}`} className="mp-trace-item">
-                      <strong>
-                        {step.index}. {step.toolName}
-                      </strong>
-                      <span>
-                        {step.status} · {step.durationMs}ms
-                      </span>
-                      <p>{step.preview}</p>
-                    </div>
-                  ))}
-                </div>
+                <p className="mp-muted">Candidate pool size: {recommendationTrace.candidateCount ?? "n/a"}</p>
               </details>
             )}
 

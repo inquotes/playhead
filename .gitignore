@@ -35,7 +35,11 @@ yarn-error.log*
 
 # local tooling and planning docs
 opencode.json
-docs/
+docs/*
+!docs/refactor-audit.md
+!docs/refactor-plan.md
+!docs/system-overview.md
+!docs/prompting.md
 .npm-cache/
 dev.db
 
