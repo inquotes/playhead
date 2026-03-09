@@ -37,6 +37,12 @@ model UserAccount {
   analysisRuns       AnalysisRun[]
   recommendationRuns RecommendationRun[]
   agentRuns          AgentRun[]
+  savedArtists       SavedArtist[]
+  weeklyListeningState UserWeeklyListeningState?
+  weeklyArtistPlaycounts UserWeeklyArtistPlaycount[]
+  knownArtistRollup     UserKnownArtistRollup[]
+  weeklyIngestedWeeks   UserWeeklyIngestedWeek[]
+  weeklyBackfillJob     UserWeeklyBackfillJob?
 }
 
 model AuthSession {
@@ -156,4 +162,116 @@ model LastfmApiCache {
 
   @@index([scope, method])
   @@index([expiresAt])
+}
+
+model SavedArtist {
+  id                         String      @id @default(cuid())
+  userAccountId              String
+  userAccount                UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  artistName                 String
+  normalizedName             String
+  savedFromRecommendationRunId String?
+  savedFromAnalysisRunId     String?
+  savedFromLaneId            String?
+  savedFromTargetUsername    String?
+  knownPlaycountAtSave       Int?
+  knownArtistAtSave          Boolean?
+  savedAt                    DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
+
+  @@unique([userAccountId, normalizedName])
+  @@index([userAccountId, savedAt])
+}
+
+model UserWeeklyListeningState {
+  id                    String      @id @default(cuid())
+  userAccountId         String      @unique
+  userAccount           UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  lastfmUsername        String
+  status                String      @default("idle")
+  weeksDiscovered       Int         @default(0)
+  weeksProcessed        Int         @default(0)
+  newestWeekStart       Int?
+  oldestWeekStart       Int?
+  lastProcessedWeekStart Int?
+  lastProcessedWeekEnd  Int?
+  recentYearReadyAt     DateTime?
+  fullHistoryReadyAt    DateTime?
+  lastAttemptAt         DateTime?
+  lastSuccessAt         DateTime?
+  lastErrorCode         String?
+  lastErrorMessage      String?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+}
+
+model UserWeeklyArtistPlaycount {
+  id             String      @id @default(cuid())
+  userAccountId  String
+  userAccount    UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  weekStart      Int
+  weekEnd        Int
+  artistName     String
+  normalizedName String
+  playcount      Int
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([userAccountId, weekStart, weekEnd, normalizedName])
+  @@index([userAccountId, weekStart])
+  @@index([userAccountId, normalizedName])
+}
+
+model UserWeeklyIngestedWeek {
+  id               String      @id @default(cuid())
+  userAccountId    String
+  userAccount      UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  weekStart        Int
+  weekEnd          Int
+  status           String      @default("done")
+  artistCount      Int         @default(0)
+  attemptCount     Int         @default(1)
+  lastAttemptAt    DateTime    @default(now())
+  lastErrorMessage String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@unique([userAccountId, weekStart, weekEnd])
+  @@index([userAccountId, status])
+}
+
+model UserWeeklyBackfillJob {
+  id                  String      @id @default(cuid())
+  userAccountId       String      @unique
+  userAccount         UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  lastfmUsername      String
+  status              String      @default("queued")
+  priority            Int         @default(100)
+  nextRunAt           DateTime    @default(now())
+  lockToken           String?
+  lockExpiresAt       DateTime?
+  lastHeartbeatAt     DateTime?
+  attemptCount        Int         @default(0)
+  consecutiveFailures Int         @default(0)
+  lastErrorCode       String?
+  lastErrorMessage    String?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([lockExpiresAt])
+}
+
+model UserKnownArtistRollup {
+  id             String      @id @default(cuid())
+  userAccountId  String
+  userAccount    UserAccount @relation(fields: [userAccountId], references: [id], onDelete: Cascade)
+  artistName     String
+  normalizedName String
+  playcount      Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([userAccountId, normalizedName])
+  @@index([userAccountId, playcount])
 }

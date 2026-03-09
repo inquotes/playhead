@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { LogoutButton } from "./logout-button";
+import { DiscoveryListSection } from "./discovery-list-section";
 
 function formatDate(iso: Date): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -47,6 +48,18 @@ export default async function ProfilePage() {
     },
   });
 
+  const savedArtists = await prisma.savedArtist.findMany({
+    where: { userAccountId: user.id },
+    orderBy: { savedAt: "desc" },
+    take: 100,
+    select: {
+      id: true,
+      artistName: true,
+      savedAt: true,
+      savedFromTargetUsername: true,
+    },
+  });
+
   return (
     <main className="mp-page">
       <section className="mp-panel mp-panel-narrow">
@@ -59,6 +72,17 @@ export default async function ProfilePage() {
             Back Home
           </Link>
         </div>
+
+        <div className="mp-divider" />
+
+        <DiscoveryListSection
+          initialItems={savedArtists.map((artist) => ({
+            id: artist.id,
+            artistName: artist.artistName,
+            savedAt: artist.savedAt.toISOString(),
+            savedFromTargetUsername: artist.savedFromTargetUsername,
+          }))}
+        />
 
         <div className="mp-divider" />
 

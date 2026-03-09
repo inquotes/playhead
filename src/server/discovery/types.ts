@@ -96,6 +96,15 @@ export type RecommendationResult = {
   candidates: RecommendationCandidate[];
   recommendations: Recommendation[];
   strategyNote: string;
+  timing?: {
+    candidateSeedMergeMs: number;
+    similarExpansionMs: number;
+    profileEnrichmentMs: number;
+    rankingMs: number;
+    explanationMs: number;
+    albumLookupMs: number;
+    totalMs: number;
+  };
 };
 
 export type Lane = {

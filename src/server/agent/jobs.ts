@@ -10,6 +10,13 @@ import {
 } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
 import { getKnownArtists } from "@/server/lastfm/service";
+import {
+  ensureRecentYearHistory,
+  ensureWeeklyHistoryInBackground,
+  getAggregatedWeeklyArtistsFromStore,
+  getKnownArtistsFromWeeklyRollup,
+  isRangeWithinRecentYear,
+} from "@/server/lastfm/weekly-history";
 
 type RunEventAppender = (event: {
   type: string;
@@ -97,6 +104,7 @@ export async function launchAnalyzeRun(params: {
   visitorSessionId: string;
   userAccountId?: string;
   targetLastfmUsername?: string;
+  useAccountWeeklyHistory?: boolean;
   username: string;
   preset: RangePreset;
   from?: number;
@@ -134,6 +142,27 @@ export async function launchAnalyzeRun(params: {
       },
     });
 
+    let weeklyArtistsOverride: Array<{ artistName: string; normalizedName: string; playcount: number }> | undefined;
+    let knownArtistsOverride: Array<{ artistName: string; normalizedName: string; playcount: number }> | undefined;
+
+    if (params.useAccountWeeklyHistory && params.userAccountId) {
+      ensureWeeklyHistoryInBackground({ userAccountId: params.userAccountId, username: params.username });
+      const coverage = await ensureRecentYearHistory({
+        userAccountId: params.userAccountId,
+        username: params.username,
+        waitMs: 10_000,
+      });
+      knownArtistsOverride = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
+
+      if (coverage.coverage === "full_recent_year" && isRangeWithinRecentYear(range.from, range.to)) {
+        weeklyArtistsOverride = await getAggregatedWeeklyArtistsFromStore({
+          userAccountId: params.userAccountId,
+          from: range.from,
+          to: range.to,
+        });
+      }
+    }
+
     const snapshot = await withTimeout(
       buildListeningSnapshot({
         username: params.username,
@@ -143,6 +172,8 @@ export async function launchAnalyzeRun(params: {
           to: range.to,
           label: range.label,
         },
+        weeklyArtistsOverride,
+        knownArtistsOverride,
       }),
       timeoutMs,
       "Analyze snapshot build",
@@ -241,11 +272,16 @@ export async function launchAnalyzeRun(params: {
     });
 
     const laneResult = await withTimeout(synthesizeTasteLanes(snapshot), timeoutMs, "Lane synthesis");
+    const traceJsonWithTiming = {
+      ...traceJson,
+      timing: laneResult.timing,
+    };
 
     await appendRunEvent({
       type: "lane_synthesis_completed",
       payload: {
         laneCount: laneResult.lanes.length,
+        timing: laneResult.timing,
         message: `Generated ${laneResult.lanes.length} taste lanes.`,
       },
     });
@@ -266,7 +302,7 @@ export async function launchAnalyzeRun(params: {
           summary: laneResult.summary,
           notablePatterns: laneResult.notablePatterns,
           lanes: laneResult.lanes,
-          trace: traceJson,
+          trace: traceJsonWithTiming,
         } as Prisma.InputJsonValue,
       },
     });
@@ -280,7 +316,7 @@ export async function launchAnalyzeRun(params: {
       notablePatterns: laneResult.notablePatterns,
       lanes: laneResult.lanes,
       topArtists: snapshot.topArtists.slice(0, 12),
-      trace: traceJson,
+      trace: traceJsonWithTiming,
     } as Prisma.InputJsonValue;
 
     await prisma.agentRun.update({
@@ -317,6 +353,7 @@ export async function launchRecommendRun(params: {
   visitorSessionId: string;
   userAccountId?: string;
   targetLastfmUsername?: string;
+  useAccountWeeklyHistory?: boolean;
   username: string;
   analysisRunId: string;
   laneId: string;
@@ -376,13 +413,30 @@ export async function launchRecommendRun(params: {
       },
     });
 
-    const knownArtists = await getKnownArtists({ username: targetUsername });
+    let knownHistoryCoverage: "full_recent_year" | "partial" = "full_recent_year";
+    let knownArtists: Array<{ artistName: string; normalizedName: string; playcount: number }> = [];
+
+    if (params.useAccountWeeklyHistory && params.userAccountId) {
+      const coverage = await ensureRecentYearHistory({
+        userAccountId: params.userAccountId,
+        username: targetUsername,
+        waitMs: 10_000,
+      });
+      knownHistoryCoverage = coverage.coverage;
+      knownArtists = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
+    } else {
+      knownArtists = await getKnownArtists({ username: targetUsername });
+    }
 
     await appendRunEvent({
       type: "recommendation_known_history_completed",
       payload: {
         knownArtistCount: knownArtists.length,
-        message: `Known-history scan ready (${knownArtists.length} artists).`,
+        coverage: knownHistoryCoverage,
+        message:
+          knownHistoryCoverage === "full_recent_year"
+            ? `Known-history scan ready (${knownArtists.length} artists).`
+            : `Known-history scan is still warming up (${knownArtists.length} artists indexed so far).`,
       },
     });
 
@@ -494,6 +548,7 @@ export async function launchRecommendRun(params: {
       payload: {
         candidateCount: recommendationResult.candidates.length,
         selectedCount: recommendationResult.recommendations.length,
+        timing: recommendationResult.timing ?? null,
         message: `Ranked ${recommendationResult.candidates.length} candidates and selected ${recommendationResult.recommendations.length}.`,
       },
     });
@@ -505,6 +560,7 @@ export async function launchRecommendRun(params: {
       selectedCount: recommendationResult.recommendations.length,
       deterministicRanking: true,
       llmRole: "explanations-only",
+      timing: recommendationResult.timing ?? null,
     };
 
     const recommendationRun = await prisma.$transaction(async (tx) => {
@@ -539,6 +595,11 @@ export async function launchRecommendRun(params: {
       recommendationRunId: recommendationRun.id,
       targetUsername,
       strategyNote: recommendationResult.strategyNote,
+      knownHistoryCoverage,
+      knownHistoryMessage:
+        knownHistoryCoverage === "partial"
+          ? "Still building full profile history; some recommendations may not be completely new-to-you."
+          : null,
       lane: selectedLane,
       recommendations: recommendationResult.recommendations,
       trace: traceJson,

@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 import { getCurrentUserAccount } from "@/server/auth";
+import { ensureWeeklyHistoryInBackground } from "@/server/lastfm/weekly-history";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 export async function GET() {
   try {
     const [visitorContext, user] = await Promise.all([getOrCreateVisitorSession(), getCurrentUserAccount()]);
+
+    if (user) {
+      ensureWeeklyHistoryInBackground({
+        userAccountId: user.id,
+        username: user.lastfmUsername,
+      });
+    }
 
     const response = NextResponse.json({
       ok: true,

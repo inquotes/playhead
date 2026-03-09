@@ -629,6 +629,12 @@ input {
   font-size: 0.85rem;
 }
 
+.mp-inline-warning {
+  margin: 0.65rem 0 0;
+  color: color-mix(in oklab, var(--accent) 72%, #7a5a12 28%);
+  font-size: 0.85rem;
+}
+
 .mp-checkbox-row {
   margin-top: 0.8rem;
   display: flex;

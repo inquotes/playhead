@@ -60,6 +60,7 @@ export async function POST(request: Request) {
       userAccountId: userAccount.id,
       username: targetUsername,
       targetLastfmUsername: targetUsername,
+      useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
       preset: payload.preset,
       from: payload.from,
       to: payload.to,

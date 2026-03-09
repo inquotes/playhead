@@ -5,6 +5,7 @@ import { AUTH_STATE_COOKIE_NAME } from "@/lib/constants";
 import { getAuthSession } from "@/lib/lastfm";
 import { clearAuthStateCookie, createAuthSession } from "@/server/auth";
 import { encryptSecret } from "@/server/crypto";
+import { ensureWeeklyHistoryInBackground } from "@/server/lastfm/weekly-history";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
 function safeNext(value: string | null): string {
@@ -68,6 +69,10 @@ export async function GET(request: Request) {
     await createAuthSession(response, {
       userAccountId: userAccount.id,
       request,
+    });
+    ensureWeeklyHistoryInBackground({
+      userAccountId: userAccount.id,
+      username: userAccount.lastfmUsername,
     });
     return attachVisitorCookie(response, visitorContext);
   } catch (error) {

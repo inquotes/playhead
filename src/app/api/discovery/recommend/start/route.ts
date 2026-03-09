@@ -67,6 +67,7 @@ export async function POST(request: Request) {
       userAccountId: userAccount.id,
       username: targetUsername,
       targetLastfmUsername: targetUsername,
+      useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
       analysisRunId: payload.analysisRunId,
       laneId: payload.laneId,
       limit: payload.limit,

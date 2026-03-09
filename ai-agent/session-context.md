@@ -18,6 +18,7 @@
 - New-to-you filter: exclude artists with `knownPlaycount >= 10`; allow `< 10`.
 - Recommend flow should not rebuild full listening snapshots.
 - Recommend should use lane context from analysis + known-history scan.
+- Self-target known-history scans should prefer persisted weekly history + rollup, with a short readiness wait and partial-coverage fallback.
 - Persist one recommendation run per lane per analysis; refresh replaces prior lane result.
 - If selected analysis window has no listening history, return empty lanes with explicit no-history messaging.
 - If selected lane has no seed data, return empty recommendations quickly (no long-running expansion).
@@ -36,7 +37,7 @@
 - Enforce run timeouts and fail fast with clear user-visible errors.
 
 ## Current Roadmap Focus
-- Next feature: saved artists (persist + view + remove).
+- Next feature: per-user known-artist snapshot (refresh cadence + recommendation speedups).
 - Then: history/profile IA and UX polish.
 - Then: legacy API cleanup and docs alignment.
 - Then: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).

@@ -11,9 +11,11 @@
 ## Core Runtime Model
 - Analyze step builds a `ListeningSnapshot`; if no in-window listening is found, it persists an empty-lane analysis with explicit no-history summary.
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
+- Authenticated self-target runs now warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) before falling back to direct weekly API aggregation.
 - Each lane includes compact `LaneContext` data: representative/member artists, tags, and bounded `similarHints` for warm-start recommendation expansion.
 - Recommend step reuses lane context from `AnalysisRun` and does not rebuild the full listening snapshot.
 - Recommend step fetches broad known history (library-first, cached), filters with the rule: exclude artists with `>= 10` known plays, allow `< 10`.
+- Recommend self-target runs now wait briefly (up to ~10s) for recent-year weekly history coverage and then filter from rollup; if still partial, run proceeds with best-available history and returns a user warning.
 - Recommendation card copy is now playlist-editor style (`blurb`) with optional Last.fm top-album suggestion (`recommendedAlbum`); deterministic ranking remains unchanged.
 - Recommendation persistence is lane-scoped: one run per lane per analysis; refresh replaces prior lane run.
 - Recommendation execution short-circuits for empty seed lanes and for no-selected-candidate cases to avoid unnecessary long-running calls.
@@ -21,6 +23,7 @@
 ## Account + History UX
 - Landing is account-aware: unauthenticated users see `Connect Last.fm`; authenticated users see `Get Recommendations`.
 - Profile page exists at `/profile` with logout and nested history: analyses with associated recommendation runs.
+- Profile now includes a `Discovery List` section for saved recommendation artists with remove support.
 - `Re-Visit` links hydrate stored runs directly into the app via `/?analysisRunId=...` (optionally `&recommendationRunId=...`).
 - Profile history currently shows self-target runs only (`targetLastfmUsername === currentUser.lastfmUsername`).
 - Opening a lane reuses cached saved recommendations for that lane when available; users can explicitly `Refresh recs`.

@@ -238,14 +238,17 @@ async function attachSimilarHintsToLanes(params: { username: string; lanes: Lane
 export async function buildListeningSnapshot(params: {
   username: string;
   timeWindow: TimeWindow;
+  weeklyArtistsOverride?: Array<{ artistName: string; normalizedName: string; playcount: number }>;
+  knownArtistsOverride?: Array<{ artistName: string; normalizedName: string; playcount: number }>;
 }): Promise<ListeningSnapshot> {
   const [weeklyArtists, knownArtists, topTracks] = await Promise.all([
-    getAggregatedWeeklyArtists({
-      username: params.username,
-      from: params.timeWindow.from,
-      to: params.timeWindow.to,
-    }),
-    getKnownArtists({ username: params.username }),
+    params.weeklyArtistsOverride ??
+      getAggregatedWeeklyArtists({
+        username: params.username,
+        from: params.timeWindow.from,
+        to: params.timeWindow.to,
+      }),
+    params.knownArtistsOverride ?? getKnownArtists({ username: params.username }),
     getTopTrackSummary(params.username),
   ]);
 
@@ -343,7 +346,14 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
   summary: string;
   notablePatterns: string[];
   lanes: Lane[];
+  timing: {
+    llmLaneModelMs: number;
+    similarHintsMs: number;
+    totalMs: number;
+    usedFallback: boolean;
+  };
 }> {
+  const totalStart = Date.now();
   const artistInput = snapshot.artistProfiles.slice(0, 24).map((profile) => ({
     artist: profile.artistName,
     plays: profile.periodPlaycount,
@@ -355,6 +365,7 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
   const client = getOpenAIClient();
 
   try {
+    const llmStart = Date.now();
     const completion = await client.chat.completions.parse({
       model: getOpenAIModel(),
       messages: [
@@ -380,6 +391,7 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
     if (!parsed) {
       throw new Error("Lane model did not return parseable output.");
     }
+    const llmLaneModelMs = Date.now() - llmStart;
 
     const periodPlayMap = new Map(snapshot.topArtists.map((artist) => [artist.normalizedName, artist.periodPlaycount]));
     const normalizedArtistMap = new Map(snapshot.topArtists.map((artist) => [artist.normalizedName, artist.artistName]));
@@ -437,27 +449,44 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
       };
     });
 
+    const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
       username: snapshot.username,
       lanes: mapTasteLanesToUi(lanes),
     });
+    const similarHintsMs = Date.now() - hintsStart;
 
     return {
       summary: parsed.summary,
       notablePatterns: parsed.notablePatterns,
       lanes: lanesWithHints,
+      timing: {
+        llmLaneModelMs,
+        similarHintsMs,
+        totalMs: Date.now() - totalStart,
+        usedFallback: false,
+      },
     };
   } catch {
+    const llmLaneModelMs = Date.now() - totalStart;
     const fallback = buildFallbackLanes(snapshot);
+    const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
       username: snapshot.username,
       lanes: mapTasteLanesToUi(fallback.lanes),
     });
+    const similarHintsMs = Date.now() - hintsStart;
 
     return {
       summary: fallback.summary,
       notablePatterns: fallback.notablePatterns,
       lanes: lanesWithHints,
+      timing: {
+        llmLaneModelMs,
+        similarHintsMs,
+        totalMs: Date.now() - totalStart,
+        usedFallback: true,
+      },
     };
   }
 }
@@ -582,6 +611,7 @@ export async function generateDeterministicRecommendations(params: {
   knownArtists: Array<{ artistName: string; normalizedName: string; playcount: number }>;
   limit: number;
 }): Promise<RecommendationResult> {
+  const totalStart = Date.now();
   const limit = Math.max(1, Math.min(4, params.limit));
   const knownPlayMap = new Map(params.knownArtists.map((artist) => [artist.normalizedName, artist.playcount]));
   const seedArtists = uniqueNormalizedArtists([
@@ -629,6 +659,8 @@ export async function generateDeterministicRecommendations(params: {
     existing.supportMatchTotal += candidate.matchScore;
   };
 
+  const seedMergeStart = Date.now();
+
   for (const hint of params.laneContext.similarHints) {
     for (const seedArtist of hint.supportSeeds) {
       upsertCandidate({
@@ -639,7 +671,9 @@ export async function generateDeterministicRecommendations(params: {
       });
     }
   }
+  const candidateSeedMergeMs = Date.now() - seedMergeStart;
 
+  const similarExpansionStart = Date.now();
   for (const seed of seedArtists) {
     const similar = await getSimilarArtistProfiles({ artistName: seed, username: params.username, limit: 24 });
     for (const match of similar) {
@@ -651,7 +685,9 @@ export async function generateDeterministicRecommendations(params: {
       });
     }
   }
+  const similarExpansionMs = Date.now() - similarExpansionStart;
 
+  const rankingStart = Date.now();
   const rankedCandidates = [...candidateMap.entries()]
     .map(([normalizedName, value]) => ({ normalizedName, ...value }))
     .sort((a, b) => b.supportMatchTotal - a.supportMatchTotal)
@@ -659,6 +695,7 @@ export async function generateDeterministicRecommendations(params: {
 
   const recommendationCandidates: RecommendationCandidate[] = [];
 
+  const profileEnrichmentStart = Date.now();
   for (const candidate of rankedCandidates) {
     const knownPlaycount = knownPlayMap.get(candidate.normalizedName) ?? null;
     const profile = await getArtistProfile({ artistName: candidate.artistName, username: params.username });
@@ -690,11 +727,13 @@ export async function generateDeterministicRecommendations(params: {
       },
     });
   }
+  const profileEnrichmentMs = Date.now() - profileEnrichmentStart;
 
   const selected = recommendationCandidates
     .filter((candidate) => candidate.status === "included")
     .sort((a, b) => b.finalScore - a.finalScore)
     .slice(0, limit);
+  const rankingMs = Date.now() - rankingStart;
 
   const baseRecommendations: Recommendation[] = selected.map((candidate) => {
     const tags = ((candidate.metadata.tags as string[] | undefined) ?? []).slice(0, 5);
@@ -727,9 +766,19 @@ export async function generateDeterministicRecommendations(params: {
       recommendations: baseRecommendations,
       strategyNote:
         "No eligible new-to-you artists were found for this lane after known-history filtering. Try another lane or a broader time window.",
+      timing: {
+        candidateSeedMergeMs,
+        similarExpansionMs,
+        profileEnrichmentMs,
+        rankingMs,
+        explanationMs: 0,
+        albumLookupMs: 0,
+        totalMs: Date.now() - totalStart,
+      },
     };
   }
 
+  const explanationStart = Date.now();
   const explanationMap = await generateRecommendationExplanations({
     laneContext: params.laneContext,
     candidates: selected.map((candidate) => ({
@@ -740,7 +789,9 @@ export async function generateDeterministicRecommendations(params: {
       supportingSeedArtists: candidate.supportingSeedArtists,
     })),
   });
+  const explanationMs = Date.now() - explanationStart;
 
+  const albumLookupStart = Date.now();
   const albumByArtist = new Map<string, string | null>();
   await Promise.all(
     selected.map(async (candidate) => {
@@ -748,6 +799,7 @@ export async function generateDeterministicRecommendations(params: {
       albumByArtist.set(normalizeArtist(candidate.artistName), album);
     }),
   );
+  const albumLookupMs = Date.now() - albumLookupStart;
 
   const recommendations = baseRecommendations.map((recommendation) => ({
     ...recommendation,
@@ -764,5 +816,14 @@ export async function generateDeterministicRecommendations(params: {
     recommendations,
     strategyNote:
       "Candidates are generated deterministically from lane seed neighborhoods, filtered against broad known history, ranked by support + overlap + novelty, then explained by the LLM.",
+    timing: {
+      candidateSeedMergeMs,
+      similarExpansionMs,
+      profileEnrichmentMs,
+      rankingMs,
+      explanationMs,
+      albumLookupMs,
+      totalMs: Date.now() - totalStart,
+    },
   };
 }

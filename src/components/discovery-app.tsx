@@ -72,6 +72,13 @@ type HistoryAnalysisResponse = {
   recommendationRuns: HistoryRecommendationRun[];
 };
 
+type SavedArtistRecord = {
+  id: string;
+  artistName: string;
+  normalizedName: string;
+  savedAt: string;
+};
+
 type AgentLiveEvent = {
   seq: number;
   type: string;
@@ -135,6 +142,10 @@ function uniqueArtists(list: string[]): string[] {
   return unique;
 }
 
+function normalizeArtistName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export function DiscoveryApp() {
   const [view, setView] = useState<ViewState>("landing");
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
@@ -162,6 +173,10 @@ export function DiscoveryApp() {
   const [targetValidationState, setTargetValidationState] = useState<"idle" | "validating" | "valid" | "error">("idle");
   const [targetValidationMessage, setTargetValidationMessage] = useState<string | null>(null);
   const [analysisTargetUsername, setAnalysisTargetUsername] = useState<string | null>(null);
+  const [savedArtists, setSavedArtists] = useState<SavedArtistRecord[]>([]);
+  const [savingArtistName, setSavingArtistName] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [knownHistoryMessage, setKnownHistoryMessage] = useState<string | null>(null);
 
   const username = status?.user?.displayName ?? status?.user?.lastfmUsername ?? "listener";
   const selfUsername = status?.user?.lastfmUsername ?? null;
@@ -185,6 +200,9 @@ export function DiscoveryApp() {
     return latestByLane;
   }, [recommendationRuns]);
   const displayAnalysisUsername = analysisTargetUsername ?? username;
+  const savedArtistNameSet = useMemo(() => {
+    return new Set(savedArtists.map((item) => item.normalizedName));
+  }, [savedArtists]);
 
   const currentYear = new Date().getUTCFullYear();
   const yearOptions = useMemo(() => {
@@ -272,6 +290,11 @@ export function DiscoveryApp() {
         const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/auth/me");
         setStatus(nextStatus);
 
+        if (nextStatus.isAuthenticated) {
+          const saved = await jsonFetch<{ ok: true; savedArtists: SavedArtistRecord[] }>("/api/saved-artists");
+          setSavedArtists(saved.savedArtists ?? []);
+        }
+
         const search = new URLSearchParams(window.location.search);
         const analysisRunId = search.get("analysisRunId");
         const recommendationRunId = search.get("recommendationRunId");
@@ -317,6 +340,7 @@ export function DiscoveryApp() {
       if (hydratedRec) {
         setSelectedLaneId(hydratedRec.selectedLane);
         setRecommendations(hydratedRec.recommendations ?? []);
+        setKnownHistoryMessage(null);
         setShowingCachedRecommendations(true);
         setView("cluster-detail");
       } else {
@@ -336,6 +360,41 @@ export function DiscoveryApp() {
     setBusy(true);
     setError(null);
     window.location.href = "/api/auth/lastfm/start?next=/";
+  }
+
+  async function saveArtist(artistName: string) {
+    if (!status?.isAuthenticated) return;
+    const normalizedName = normalizeArtistName(artistName);
+    if (savedArtistNameSet.has(normalizedName)) return;
+
+    setSavingArtistName(artistName);
+    setSaveError(null);
+
+    const selectedRecommendationRunId = selectedLaneId ? (recommendationByLane.get(selectedLaneId)?.id ?? undefined) : undefined;
+
+    try {
+      const data = await jsonFetch<{ ok: true; savedArtist: SavedArtistRecord }>("/api/saved-artists", {
+        method: "POST",
+        body: JSON.stringify({
+          artistName,
+          savedFromRecommendationRunId: selectedRecommendationRunId,
+          savedFromAnalysisRunId: analysisRunId ?? undefined,
+          savedFromLaneId: selectedLaneId ?? undefined,
+          savedFromTargetUsername: analysisTargetUsername ?? selfUsername ?? undefined,
+        }),
+      });
+
+      setSavedArtists((prev) => {
+        if (prev.some((item) => item.id === data.savedArtist.id || item.normalizedName === data.savedArtist.normalizedName)) {
+          return prev;
+        }
+        return [data.savedArtist, ...prev];
+      });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Could not save artist.");
+    } finally {
+      setSavingArtistName(null);
+    }
   }
 
   function goToRecommendations() {
@@ -394,6 +453,7 @@ export function DiscoveryApp() {
     setRecommendations([]);
     setRecommendationRuns([]);
     setShowingCachedRecommendations(false);
+    setKnownHistoryMessage(null);
     setLiveEvents([]);
 
     let requestBody: { preset: RangeOptionId; from?: number; to?: number; targetUsername?: string } = { preset: selectedRange };
@@ -482,6 +542,7 @@ export function DiscoveryApp() {
       setActiveRunId(start.runId);
       const data = await waitForRunResult(start.runId);
       setRecommendations(data.recommendations ?? []);
+      setKnownHistoryMessage(data.knownHistoryMessage ?? null);
       const recommendationRunId = data.recommendationRunId;
       if (typeof recommendationRunId === "string" && recommendationRunId.length > 0) {
         setRecommendationRuns((prev) => {
@@ -527,6 +588,8 @@ export function DiscoveryApp() {
       analysisRunId?: string;
       recommendationRunId?: string;
       targetUsername?: string;
+      knownHistoryCoverage?: "full_recent_year" | "partial";
+      knownHistoryMessage?: string | null;
       range?: { label?: string };
       lanes: Lane[];
       summary?: string;
@@ -565,6 +628,8 @@ export function DiscoveryApp() {
               analysisRunId?: string;
               recommendationRunId?: string;
               targetUsername?: string;
+              knownHistoryCoverage?: "full_recent_year" | "partial";
+              knownHistoryMessage?: string | null;
               range?: { label?: string };
               lanes: Lane[];
               summary?: string;
@@ -593,6 +658,7 @@ export function DiscoveryApp() {
     setSelectedLaneId(lane.id);
     const cachedRun = recommendationByLane.get(lane.id);
     setRecommendations(cachedRun?.recommendations ?? []);
+    setKnownHistoryMessage(null);
     setShowingCachedRecommendations(Boolean(cachedRun));
     setView("cluster-detail");
   }
@@ -915,6 +981,7 @@ export function DiscoveryApp() {
             <p className="mp-kicker">NEW FOR YOU</p>
             <h1>Recommended Artists</h1>
             <p className="mp-muted">Artists that match this cluster and are still likely underexplored in your history.</p>
+            {knownHistoryMessage && <p className="mp-inline-warning">{knownHistoryMessage}</p>}
 
             {showingCachedRecommendations && (
               <div className="mp-actions-row mp-actions-left">
@@ -967,9 +1034,23 @@ export function DiscoveryApp() {
                   <p>{rec.blurb ?? rec.reason ?? "A strong fit for this lane."}</p>
                   {rec.recommendedAlbum && <small>Start with album: {rec.recommendedAlbum}</small>}
                   <small>Seeded from {rec.matchSource}</small>
+                  <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.7rem" }}>
+                    {savedArtistNameSet.has(normalizeArtistName(rec.artist)) ? (
+                      <span className="mp-chip">Saved to Discovery List</span>
+                    ) : (
+                      <button
+                        className="mp-button mp-button-ghost mp-button-compact"
+                        onClick={() => void saveArtist(rec.artist)}
+                        disabled={savingArtistName === rec.artist}
+                      >
+                        {savingArtistName === rec.artist ? "Saving..." : "Save to Discovery List"}
+                      </button>
+                    )}
+                  </div>
                 </article>
               ))}
             </div>
+            {saveError && <p className="mp-inline-error">{saveError}</p>}
           </section>
         </main>
       )}
