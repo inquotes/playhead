@@ -47,6 +47,13 @@ Open http://localhost:3000.
 3. The callback exchanges token -> Last.fm session key.
 4. App stores an authenticated session and runs analysis/recommendations.
 
+Primary auth routes:
+
+- `GET /api/auth/lastfm/start`
+- `GET /api/auth/lastfm/callback`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+
 ## API-first flow notes
 
 - Direct Last.fm API is the source of truth for listening and artist metadata.
@@ -65,6 +72,13 @@ Open http://localhost:3000.
   - `GET /api/discovery/runs/[runId]`
 - Live SSE stream endpoint:
   - `GET /api/discovery/runs/[runId]/stream`
+- Frontend also polls run status and applies a client-side max wait guard to avoid infinite loading UI.
+
+## Empty-data behavior
+
+- If the selected analysis window has no listening history, analysis completes with an explicit no-history summary and no lanes.
+- Recommendation runs short-circuit for lanes without seed data and return an empty recommendation list with clear user-facing messaging.
+- Recommendation persistence is lane-scoped: one saved recommendation run per lane per analysis; refresh replaces the prior lane result.
 
 ## Pipeline env
 
@@ -76,10 +90,14 @@ Open http://localhost:3000.
 ## Key API routes
 
 - `GET /api/session`
-- `POST /api/lastfm/connect/start`
-- `GET /api/lastfm/connect/status`
-- `POST /api/lastfm/connect/verify`
-- `POST /api/lastfm/disconnect`
-- `POST /api/discovery/analyze`
-- `GET /api/discovery/lanes/[analysisRunId]`
-- `POST /api/discovery/recommend`
+- `GET /api/auth/lastfm/start`
+- `GET /api/auth/lastfm/callback`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+- `POST /api/discovery/analyze/start`
+- `POST /api/discovery/recommend/start`
+- `GET /api/discovery/runs/[runId]`
+- `GET /api/discovery/runs/[runId]/stream`
+- `GET /api/history/analysis/[analysisRunId]`
+
+Legacy username-connect routes may still exist in code for cleanup but are not the primary account flow.

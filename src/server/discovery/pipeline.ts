@@ -589,6 +589,16 @@ export async function generateDeterministicRecommendations(params: {
     ...params.laneContext.representativeArtists,
   ]).slice(0, 8);
 
+  if (seedArtists.length === 0 && params.laneContext.similarHints.length === 0) {
+    return {
+      laneId: params.laneContext.laneId,
+      laneLabel: params.laneContext.label,
+      candidates: [],
+      recommendations: [],
+      strategyNote: "No recommendation seeds were available for this lane in the selected analysis window.",
+    };
+  }
+
   const laneTagSet = new Set(params.laneContext.tags.map((tag) => tag.toLowerCase()));
   const candidateMap = new Map<
     string,
@@ -708,6 +718,17 @@ export async function generateDeterministicRecommendations(params: {
       evidence: candidate.evidence,
     };
   });
+
+  if (selected.length === 0) {
+    return {
+      laneId: params.laneContext.laneId,
+      laneLabel: params.laneContext.label,
+      candidates: recommendationCandidates,
+      recommendations: baseRecommendations,
+      strategyNote:
+        "No eligible new-to-you artists were found for this lane after known-history filtering. Try another lane or a broader time window.",
+    };
+  }
 
   const explanationMap = await generateRecommendationExplanations({
     laneContext: params.laneContext,

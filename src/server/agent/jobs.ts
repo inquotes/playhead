@@ -16,6 +16,31 @@ type RunEventAppender = (event: {
   payload: Record<string, unknown>;
 }) => Promise<void>;
 
+class RunTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunTimeoutError";
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new RunTimeoutError(`${label} exceeded ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 async function createRunEventAppender(runId: string): Promise<RunEventAppender> {
   const latest = await prisma.agentRunEvent.findFirst({
     where: { runId },
@@ -45,14 +70,19 @@ async function createRunEventAppender(runId: string): Promise<RunEventAppender> 
   };
 }
 
-async function markRunFailed(runId: string, message: string, appendRunEvent: RunEventAppender) {
+async function markRunFailed(
+  runId: string,
+  message: string,
+  appendRunEvent: RunEventAppender,
+  terminationReason: "error" | "timeout" = "error",
+) {
   await prisma.agentRun.update({
     where: { id: runId },
     data: {
       status: "failed",
       errorMessage: message,
       completedAt: new Date(),
-      terminationReason: "error",
+      terminationReason,
     },
   });
 
@@ -83,6 +113,12 @@ export async function launchAnalyzeRun(params: {
       },
     });
 
+    const run = await prisma.agentRun.findUnique({
+      where: { id: params.runId },
+      select: { timeoutMs: true },
+    });
+    const timeoutMs = Math.max(5_000, run?.timeoutMs ?? 180_000);
+
     const range = resolveRange({
       preset: params.preset,
       from: params.from,
@@ -98,15 +134,19 @@ export async function launchAnalyzeRun(params: {
       },
     });
 
-    const snapshot = await buildListeningSnapshot({
-      username: params.username,
-      timeWindow: {
-        preset: params.preset,
-        from: range.from,
-        to: range.to,
-        label: range.label,
-      },
-    });
+    const snapshot = await withTimeout(
+      buildListeningSnapshot({
+        username: params.username,
+        timeWindow: {
+          preset: params.preset,
+          from: range.from,
+          to: range.to,
+          label: range.label,
+        },
+      }),
+      timeoutMs,
+      "Analyze snapshot build",
+    );
 
     await appendRunEvent({
       type: "snapshot_completed",
@@ -118,24 +158,6 @@ export async function launchAnalyzeRun(params: {
       },
     });
 
-    await appendRunEvent({
-      type: "lane_synthesis_started",
-      payload: {
-        message: "Generating taste lanes from normalized artist-level evidence.",
-      },
-    });
-
-    const laneResult = await synthesizeTasteLanes(snapshot);
-
-    await appendRunEvent({
-      type: "lane_synthesis_completed",
-      payload: {
-        laneCount: laneResult.lanes.length,
-        message: `Generated ${laneResult.lanes.length} taste lanes.`,
-      },
-    });
-
-    const heardArtists = snapshot.knownArtists.map((item) => item.artistName);
     const traceJson = {
       pipeline: "api-first-v1",
       dataSource: "official-lastfm-api",
@@ -148,6 +170,87 @@ export async function launchAnalyzeRun(params: {
       },
     };
 
+    if (snapshot.topArtists.length === 0) {
+      const summary = `No scrobbles were found in ${range.label.toLowerCase()} for ${params.username}. Choose a broader window to generate lanes.`;
+
+      const analysisRun = await prisma.analysisRun.create({
+        data: {
+          visitorSessionId: params.visitorSessionId,
+          userAccountId: params.userAccountId,
+          targetLastfmUsername: params.targetLastfmUsername ?? params.username,
+          rangeStart: range.from,
+          rangeEnd: range.to,
+          sourceVersion: "api-first-v1",
+          artistsJson: snapshot.topArtists as Prisma.InputJsonValue,
+          tracksJson: (snapshot.metadata?.topTracks ?? []) as Prisma.InputJsonValue,
+          heardArtistsJson: snapshot.knownArtists.map((item) => item.artistName) as Prisma.InputJsonValue,
+          lanesJson: {
+            summary,
+            notablePatterns: ["No listening activity was found in the selected period."],
+            lanes: [],
+            trace: traceJson,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await appendRunEvent({
+        type: "analysis_no_history_window",
+        payload: {
+          message: "No listening history found in this window.",
+          range,
+        },
+      });
+
+      await prisma.agentRun.update({
+        where: { id: params.runId },
+        data: {
+          status: "completed",
+          completedAt: new Date(),
+          terminationReason: "final",
+          toolCallsUsed: 0,
+          maxToolCalls: 0,
+          resultJson: {
+            analysisRunId: analysisRun.id,
+            targetUsername: params.targetLastfmUsername ?? params.username,
+            range,
+            laneCount: 0,
+            summary,
+            notablePatterns: ["No listening activity was found in the selected period."],
+            lanes: [],
+            topArtists: [],
+            trace: traceJson,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await appendRunEvent({
+        type: "run_completed",
+        payload: {
+          analysisRunId: analysisRun.id,
+          message: "Analysis run completed with no listening data in the selected window.",
+        },
+      });
+      return;
+    }
+
+    await appendRunEvent({
+      type: "lane_synthesis_started",
+      payload: {
+        message: "Generating taste lanes from normalized artist-level evidence.",
+      },
+    });
+
+    const laneResult = await withTimeout(synthesizeTasteLanes(snapshot), timeoutMs, "Lane synthesis");
+
+    await appendRunEvent({
+      type: "lane_synthesis_completed",
+      payload: {
+        laneCount: laneResult.lanes.length,
+        message: `Generated ${laneResult.lanes.length} taste lanes.`,
+      },
+    });
+
+    const heardArtists = snapshot.knownArtists.map((item) => item.artistName);
     const analysisRun = await prisma.analysisRun.create({
       data: {
         visitorSessionId: params.visitorSessionId,
@@ -204,6 +307,7 @@ export async function launchAnalyzeRun(params: {
       params.runId,
       error instanceof Error ? error.message : "Analyze run failed unexpectedly.",
       appendRunEvent,
+      error instanceof RunTimeoutError ? "timeout" : "error",
     );
   }
 }
@@ -228,6 +332,12 @@ export async function launchRecommendRun(params: {
         startedAt: new Date(),
       },
     });
+
+    const run = await prisma.agentRun.findUnique({
+      where: { id: params.runId },
+      select: { timeoutMs: true },
+    });
+    const timeoutMs = Math.max(5_000, run?.timeoutMs ?? 180_000);
 
     const analysisRun = await prisma.analysisRun.findFirst({
       where: {
@@ -278,6 +388,87 @@ export async function launchRecommendRun(params: {
 
     const laneContext = laneToContext(selectedLane);
 
+    const hasLaneSeedData =
+      laneContext.memberArtists.length > 0 ||
+      laneContext.representativeArtists.length > 0 ||
+      laneContext.similarHints.length > 0;
+
+    if (!hasLaneSeedData) {
+      const traceJson = {
+        pipeline: "api-first-v1",
+        dataSource: "official-lastfm-api",
+        candidateCount: 0,
+        selectedCount: 0,
+        deterministicRanking: true,
+        llmRole: "explanations-only",
+      };
+
+      const recommendationRun = await prisma.$transaction(async (tx) => {
+        await tx.recommendationRun.deleteMany({
+          where: {
+            analysisRunId: analysisRun.id,
+            selectedLane: selectedLane.id,
+            userAccountId: params.userAccountId ?? null,
+            targetLastfmUsername: targetUsername,
+          },
+        });
+
+        return tx.recommendationRun.create({
+          data: {
+            visitorSessionId: params.visitorSessionId,
+            userAccountId: params.userAccountId,
+            targetLastfmUsername: targetUsername,
+            analysisRunId: analysisRun.id,
+            selectedLane: selectedLane.id,
+            newOnly: true,
+            resultsJson: {
+              strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
+              recommendations: [],
+              candidates: [],
+              trace: traceJson,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      await appendRunEvent({
+        type: "recommendation_no_seed_data",
+        payload: {
+          laneId: selectedLane.id,
+          laneName: selectedLane.name,
+          message: "No recommendation seeds are available for this lane.",
+        },
+      });
+
+      await prisma.agentRun.update({
+        where: { id: params.runId },
+        data: {
+          status: "completed",
+          completedAt: new Date(),
+          terminationReason: "final",
+          toolCallsUsed: 0,
+          maxToolCalls: 0,
+          resultJson: {
+            recommendationRunId: recommendationRun.id,
+            targetUsername,
+            strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
+            lane: selectedLane,
+            recommendations: [],
+            trace: traceJson,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await appendRunEvent({
+        type: "run_completed",
+        payload: {
+          recommendationRunId: recommendationRun.id,
+          message: "Recommendation run completed with no available lane seed data.",
+        },
+      });
+      return;
+    }
+
     await appendRunEvent({
       type: "recommendation_expansion_started",
       payload: {
@@ -287,12 +478,16 @@ export async function launchRecommendRun(params: {
       },
     });
 
-    const recommendationResult = await generateDeterministicRecommendations({
-      username: targetUsername,
-      laneContext,
-      knownArtists,
-      limit: params.limit,
-    });
+    const recommendationResult = await withTimeout(
+      generateDeterministicRecommendations({
+        username: targetUsername,
+        laneContext,
+        knownArtists,
+        limit: params.limit,
+      }),
+      timeoutMs,
+      "Recommendation expansion",
+    );
 
     await appendRunEvent({
       type: "recommendation_expansion_completed",
@@ -312,21 +507,32 @@ export async function launchRecommendRun(params: {
       llmRole: "explanations-only",
     };
 
-    const recommendationRun = await prisma.recommendationRun.create({
-      data: {
-        visitorSessionId: params.visitorSessionId,
-        userAccountId: params.userAccountId,
-        targetLastfmUsername: targetUsername,
-        analysisRunId: analysisRun.id,
-        selectedLane: selectedLane.id,
-        newOnly: true,
-        resultsJson: {
-          strategyNote: recommendationResult.strategyNote,
-          recommendations: recommendationResult.recommendations,
-          candidates: recommendationResult.candidates,
-          trace: traceJson,
-        } as Prisma.InputJsonValue,
-      },
+    const recommendationRun = await prisma.$transaction(async (tx) => {
+      await tx.recommendationRun.deleteMany({
+        where: {
+          analysisRunId: analysisRun.id,
+          selectedLane: selectedLane.id,
+          userAccountId: params.userAccountId ?? null,
+          targetLastfmUsername: targetUsername,
+        },
+      });
+
+      return tx.recommendationRun.create({
+        data: {
+          visitorSessionId: params.visitorSessionId,
+          userAccountId: params.userAccountId,
+          targetLastfmUsername: targetUsername,
+          analysisRunId: analysisRun.id,
+          selectedLane: selectedLane.id,
+          newOnly: true,
+          resultsJson: {
+            strategyNote: recommendationResult.strategyNote,
+            recommendations: recommendationResult.recommendations,
+            candidates: recommendationResult.candidates,
+            trace: traceJson,
+          } as Prisma.InputJsonValue,
+        },
+      });
     });
 
     const resultJson = {
@@ -362,6 +568,7 @@ export async function launchRecommendRun(params: {
       params.runId,
       error instanceof Error ? error.message : "Recommend run failed unexpectedly.",
       appendRunEvent,
+      error instanceof RunTimeoutError ? "timeout" : "error",
     );
   }
 }

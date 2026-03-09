@@ -1,49 +1,38 @@
 # AI Agent TODOs
 
-## Completed This Session
+## Near-Term Roadmap
 
-- Implemented true Last.fm Web Auth account model (`/api/auth/lastfm/start`, `/api/auth/lastfm/callback`, app `AuthSession`).
-- Added encrypted storage for Last.fm session keys (`LASTFM_SESSION_ENCRYPTION_KEY`).
-- Migrated main UX from username-first to account-first (`Connect Last.fm` / `Get Recommendations`).
-- Added profile page (`/profile`) with logout and account summary.
-- Added optional "Analyze a different user" flow on time-range screen with real username validation.
-- Added run ownership + target tracking fields (`userAccountId`, `targetLastfmUsername`) across run tables.
-- Added profile history with nested recommendation runs (self-target history only).
-- Added `Re-Visit` hydration links from profile back into the main app.
-- Improved recommendation copy to playlist-editor blurbs and added recommended album suggestions.
+1. Saving artists feature (next build target)
+   - add "Save artist" action on recommendation cards
+   - add persisted saved-artists model tied to authenticated account
+   - add saved artists view (profile section or dedicated page)
+   - support remove/un-save and basic duplicate prevention
 
-## Current Product Decisions
-
-- Keep legacy username-connect API paths temporarily; do not remove yet.
-- Profile history should show only analyses about the logged-in user (not target-user history).
-- Recommendation card copy should be listener-facing and non-technical.
-- Preserve deterministic recommendation ranking; LLM is for lane synthesis and user-facing copy only.
-
-## Next Priority TODOs
-
-1. Add outbound links on recommendation cards:
-   - Last.fm artist page (baseline)
-   - optional Apple Music / Spotify links when mapping confidence is high
-
-2. Deploy-readiness hardening:
-   - replace in-memory event fanout with multi-instance-safe transport
-   - replace request-lifecycle fire-and-forget job execution with durable/background-safe execution
-   - enforce timeout/termination behavior in worker execution path
-
-3. History UX polish:
+2. History and UX polish
    - add pagination/load-more on profile history
-   - add richer revisit options (e.g., reopen directly to lane)
+   - smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
+   - redesign profile/navigation IA to support future sections as first-class pages (for example: Profile Stats, Saved Artists, Analysis History)
+   - tighten empty-state copy and CTAs across no-data/no-recs flows
 
-4. Data/infra cleanup:
-   - remove stale legacy endpoints once cutover is complete
-   - remove any remaining MCP-era remnants in code/docs/config
+3. Data and API cleanup
+   - remove stale legacy Last.fm username-connect endpoints after full cutover validation
+   - remove remaining MCP-era remnants in code/docs/config
+   - align docs with current account-first auth and history behavior
 
-5. Product follow-ons:
-   - saved artists/watchlist
-   - account-level preferences and personalization
-   - expanded listening profile reports
+4. Deploy readiness (Cloudflare-first)
+   - implement `ai-agent/cloudflare-deploy-readiness-plan.md` in phased order
+   - prioritize Phase 1-4 as the minimum production baseline
+
+## Backlog Ideas
+
+- Outbound links expansion on recommendation cards
+  - Apple Music and Spotify links when mapping confidence is high
+- Account-level preferences and personalization
+- Expanded listening profile reports
+- Additional saved-artists workflows (notes, tags, triage status)
 
 ## Reference
 
+- Cloudflare plan: `ai-agent/cloudflare-deploy-readiness-plan.md`
 - Inspiration: https://listentomore.com/
 - Source repo reviewed: https://github.com/rianvdm/listentomore

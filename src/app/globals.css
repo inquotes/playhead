@@ -33,7 +33,11 @@ body {
 }
 
 body {
-  background: var(--surface-raised);
+  background-color: var(--surface-raised);
+  background-size: 40px 40px;
+  background-image:
+    linear-gradient(to right, rgba(220, 220, 220, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(220, 220, 220, 0.18) 1px, transparent 1px);
   color: var(--ink);
   font-family: var(--font-inter), sans-serif;
   line-height: 1.45;
@@ -143,16 +147,6 @@ input {
   padding: 2rem 1rem;
   position: relative;
   overflow: hidden;
-}
-
-.mp-grid-bg {
-  position: absolute;
-  inset: 0;
-  background-size: 40px 40px;
-  background-image:
-    linear-gradient(to right, rgba(220, 220, 220, 0.35) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(220, 220, 220, 0.35) 1px, transparent 1px);
-  opacity: 0.6;
 }
 
 .mp-landing-card {
@@ -658,11 +652,6 @@ input {
   background: var(--surface);
 }
 
-.mp-rec-card.is-featured {
-  border-color: var(--accent);
-  background: color-mix(in oklab, var(--accent-soft) 58%, white 42%);
-}
-
 .mp-chip {
   display: inline-block;
   font-family: var(--font-jetbrains-mono), monospace;
@@ -678,6 +667,20 @@ input {
 .mp-rec-card h3 {
   margin: 0.55rem 0 0.25rem;
   font-size: 1.08rem;
+}
+
+.mp-rec-card h3 a.mp-rec-artist-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.mp-rec-card h3 a.mp-rec-artist-link:visited {
+  color: var(--accent);
+}
+
+.mp-rec-card h3 a.mp-rec-artist-link:hover,
+.mp-rec-card h3 a.mp-rec-artist-link:focus-visible {
+  text-decoration: underline;
 }
 
 .mp-rec-card p {

@@ -22,6 +22,8 @@ type Lane = {
   artists: string[];
   tags: string[];
   totalPlays: number;
+  memberArtists?: string[];
+  similarHints?: Array<{ artistName: string; normalizedName: string; supportSeeds: string[]; aggregateMatch: number }>;
 };
 
 type Recommendation = {
@@ -147,6 +149,8 @@ export function DiscoveryApp() {
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [recommendationRuns, setRecommendationRuns] = useState<HistoryRecommendationRun[]>([]);
+  const [showingCachedRecommendations, setShowingCachedRecommendations] = useState(false);
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,6 +166,24 @@ export function DiscoveryApp() {
   const username = status?.user?.displayName ?? status?.user?.lastfmUsername ?? "listener";
   const selfUsername = status?.user?.lastfmUsername ?? null;
   const selectedLane = useMemo(() => lanes.find((lane) => lane.id === selectedLaneId) ?? null, [lanes, selectedLaneId]);
+  const selectedLaneHasSeedData = useMemo(() => {
+    if (!selectedLane) return false;
+    return (
+      uniqueArtists(selectedLane.artists).length > 0 ||
+      uniqueArtists(selectedLane.memberArtists ?? []).length > 0 ||
+      (selectedLane.similarHints?.length ?? 0) > 0
+    );
+  }, [selectedLane]);
+  const recommendationByLane = useMemo(() => {
+    const latestByLane = new Map<string, HistoryRecommendationRun>();
+    for (const run of recommendationRuns) {
+      const existing = latestByLane.get(run.selectedLane);
+      if (!existing || new Date(run.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+        latestByLane.set(run.selectedLane, run);
+      }
+    }
+    return latestByLane;
+  }, [recommendationRuns]);
   const displayAnalysisUsername = analysisTargetUsername ?? username;
 
   const currentYear = new Date().getUTCFullYear();
@@ -285,18 +307,22 @@ export function DiscoveryApp() {
       setAnalysisRangeLabel(data.range.label);
       setLanes(data.lanes ?? []);
       setAnalysisSummary(data.summary ?? null);
+      const historyRecommendationRuns = data.recommendationRuns ?? [];
+      setRecommendationRuns(historyRecommendationRuns);
 
       const hydratedRec = recommendationRunId
-        ? data.recommendationRuns.find((run) => run.id === recommendationRunId) ?? null
+        ? historyRecommendationRuns.find((run) => run.id === recommendationRunId) ?? null
         : null;
 
       if (hydratedRec) {
         setSelectedLaneId(hydratedRec.selectedLane);
         setRecommendations(hydratedRec.recommendations ?? []);
+        setShowingCachedRecommendations(true);
         setView("cluster-detail");
       } else {
         setSelectedLaneId(data.lanes[0]?.id ?? null);
         setRecommendations([]);
+        setShowingCachedRecommendations(false);
         setView("clusters");
       }
     } catch (err) {
@@ -366,6 +392,8 @@ export function DiscoveryApp() {
     setBusy(true);
     setError(null);
     setRecommendations([]);
+    setRecommendationRuns([]);
+    setShowingCachedRecommendations(false);
     setLiveEvents([]);
 
     let requestBody: { preset: RangeOptionId; from?: number; to?: number; targetUsername?: string } = { preset: selectedRange };
@@ -423,9 +451,22 @@ export function DiscoveryApp() {
   async function runRecommendations() {
     if (!analysisRunId || !selectedLaneId) return;
 
+    const lane = lanes.find((item) => item.id === selectedLaneId);
+    const hasLaneSeedData =
+      Boolean(lane && uniqueArtists(lane.artists).length > 0) ||
+      Boolean(lane && uniqueArtists(lane.memberArtists ?? []).length > 0) ||
+      Boolean((lane?.similarHints?.length ?? 0) > 0);
+
+    if (!hasLaneSeedData) {
+      setRecommendations([]);
+      setShowingCachedRecommendations(false);
+      setError("No recommendation seed data is available for this lane. Try another lane or a broader analysis window.");
+      return;
+    }
+
     setBusy(true);
     setError(null);
-    setRecommendations([]);
+    setShowingCachedRecommendations(false);
     setLiveEvents([]);
 
     try {
@@ -441,6 +482,22 @@ export function DiscoveryApp() {
       setActiveRunId(start.runId);
       const data = await waitForRunResult(start.runId);
       setRecommendations(data.recommendations ?? []);
+      const recommendationRunId = data.recommendationRunId;
+      if (typeof recommendationRunId === "string" && recommendationRunId.length > 0) {
+        setRecommendationRuns((prev) => {
+          const filtered = prev.filter((run) => run.selectedLane !== selectedLaneId);
+          return [
+            {
+              id: recommendationRunId,
+              selectedLane: selectedLaneId,
+              createdAt: new Date().toISOString(),
+              strategyNote: null,
+              recommendations: data.recommendations ?? [],
+            },
+            ...filtered,
+          ];
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate recommendations.");
     } finally {
@@ -468,6 +525,7 @@ export function DiscoveryApp() {
   async function waitForRunResult(runId: string) {
     return new Promise<{
       analysisRunId?: string;
+      recommendationRunId?: string;
       targetUsername?: string;
       range?: { label?: string };
       lanes: Lane[];
@@ -476,6 +534,7 @@ export function DiscoveryApp() {
     }>((resolve, reject) => {
       let settled = false;
       const seenSeq = new Set<number>();
+      const maxWaitMs = 210_000;
 
       const unsubscribe = subscribeRun(runId, (event) => {
         if (seenSeq.has(event.seq)) return;
@@ -486,7 +545,15 @@ export function DiscoveryApp() {
       const finish = () => {
         unsubscribe();
         clearInterval(poll);
+        clearTimeout(timeoutHandle);
       };
+
+      const timeoutHandle = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        finish();
+        reject(new Error("This run took longer than expected and was stopped. Please try again."));
+      }, maxWaitMs);
 
       const poll = setInterval(async () => {
         try {
@@ -496,6 +563,7 @@ export function DiscoveryApp() {
             finish();
             resolve((status.run.result ?? {}) as {
               analysisRunId?: string;
+              recommendationRunId?: string;
               targetUsername?: string;
               range?: { label?: string };
               lanes: Lane[];
@@ -523,7 +591,9 @@ export function DiscoveryApp() {
 
   function onOpenLane(lane: Lane) {
     setSelectedLaneId(lane.id);
-    setRecommendations([]);
+    const cachedRun = recommendationByLane.get(lane.id);
+    setRecommendations(cachedRun?.recommendations ?? []);
+    setShowingCachedRecommendations(Boolean(cachedRun));
     setView("cluster-detail");
   }
 
@@ -532,7 +602,7 @@ export function DiscoveryApp() {
       {view !== "landing" && (
         <header className="mp-topbar">
           <button className="mp-brand" onClick={() => setView("landing")}>
-            RESONANCE
+            PLAYHEAD
           </button>
           <div className="mp-topbar-right">
             <span className="mp-kicker">ACTIVE USER</span>
@@ -547,9 +617,8 @@ export function DiscoveryApp() {
 
       {view === "landing" && (
         <main className="mp-landing">
-          <div className="mp-grid-bg" />
           <section className="mp-landing-card">
-            <p className="mp-kicker">LISTENING ANALYSIS CONSOLE</p>
+            <p className="mp-kicker">PLAYHEAD</p>
             <h1>Discover artists you do not know yet.</h1>
             <p>Recommendations based on what you already love, optimized for what is missing from your history.</p>
             <div className="mp-actions-row">
@@ -777,25 +846,29 @@ export function DiscoveryApp() {
             {analysisSummary && <p className="mp-summary">{analysisSummary}</p>}
 
             <div className="mp-divider" />
-            <div className="mp-cluster-list">
-              {lanes.map((lane, idx) => (
-                <button key={lane.id} className="mp-cluster-card" onClick={() => onOpenLane(lane)}>
-                  <div>
-                    <p className="mp-kicker">CLUSTER {String(idx + 1).padStart(2, "0")}</p>
-                    <h3>{lane.name}</h3>
-                    <small>{uniqueArtists(lane.artists).length} core artists · {lane.totalPlays} plays</small>
-                  </div>
-                  <p>{lane.description}</p>
-                  <div className="mp-tag-wrap">
-                    {uniqueArtists(lane.artists).slice(0, 7).map((artist) => (
-                      <span key={`${lane.id}-${artist.toLowerCase()}`} className="mp-tag">
-                        {artist}
-                      </span>
-                    ))}
-                  </div>
-                </button>
-              ))}
-            </div>
+            {lanes.length === 0 ? (
+              <p className="mp-muted">No listening history was found for this time window. Go back and choose a broader date range.</p>
+            ) : (
+              <div className="mp-cluster-list">
+                {lanes.map((lane, idx) => (
+                  <button key={lane.id} className="mp-cluster-card" onClick={() => onOpenLane(lane)}>
+                    <div>
+                      <p className="mp-kicker">CLUSTER {String(idx + 1).padStart(2, "0")}</p>
+                      <h3>{lane.name}</h3>
+                      <small>{uniqueArtists(lane.artists).length} core artists · {lane.totalPlays} plays</small>
+                    </div>
+                    <p>{lane.description}</p>
+                    <div className="mp-tag-wrap">
+                      {uniqueArtists(lane.artists).slice(0, 7).map((artist) => (
+                        <span key={`${lane.id}-${artist.toLowerCase()}`} className="mp-tag">
+                          {artist}
+                        </span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </section>
         </main>
       )}
@@ -843,12 +916,25 @@ export function DiscoveryApp() {
             <h1>Recommended Artists</h1>
             <p className="mp-muted">Artists that match this cluster and are still likely underexplored in your history.</p>
 
-            {!busy && recommendations.length === 0 && (
+            {showingCachedRecommendations && (
+              <div className="mp-actions-row mp-actions-left">
+                <p className="mp-kicker">Showing saved recommendations</p>
+                <button className="mp-button mp-button-ghost mp-button-compact" onClick={runRecommendations} disabled={busy}>
+                  Refresh recs
+                </button>
+              </div>
+            )}
+
+            {!busy && recommendations.length === 0 && selectedLaneHasSeedData && (
               <div className="mp-center-cta mp-detail-cta">
                 <button className="mp-button mp-button-primary" onClick={runRecommendations}>
                   Get Recommendations
                 </button>
               </div>
+            )}
+
+            {!busy && recommendations.length === 0 && !selectedLaneHasSeedData && (
+              <p className="mp-muted">This lane has no recommendation seed data in the selected time window. Try another lane or rerun analysis with a broader window.</p>
             )}
 
             {busy && activeRunId && (
@@ -866,9 +952,18 @@ export function DiscoveryApp() {
             )}
 
             <div className="mp-rec-grid">
-              {recommendations.map((rec, idx) => (
-                <article key={rec.artist} className={`mp-rec-card ${idx === 0 ? "is-featured" : ""}`}>
-                  <h3>{rec.artist}</h3>
+              {recommendations.map((rec) => (
+                <article key={rec.artist} className="mp-rec-card">
+                  <h3>
+                    <a
+                      className="mp-rec-artist-link"
+                      href={`https://www.last.fm/music/${encodeURIComponent(rec.artist)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {rec.artist}
+                    </a>
+                  </h3>
                   <p>{rec.blurb ?? rec.reason ?? "A strong fit for this lane."}</p>
                   {rec.recommendedAlbum && <small>Start with album: {rec.recommendedAlbum}</small>}
                   <small>Seeded from {rec.matchSource}</small>

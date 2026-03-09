@@ -52,7 +52,14 @@ export async function POST(request: Request) {
       },
     });
 
-    const laneResult = await synthesizeTasteLanes(snapshot);
+    const noHistoryInWindow = snapshot.topArtists.length === 0;
+    const laneResult = noHistoryInWindow
+      ? {
+          summary: `No scrobbles were found in ${range.label.toLowerCase()} for ${targetUsername}. Choose a broader window to generate lanes.`,
+          notablePatterns: ["No listening activity was found in the selected period."],
+          lanes: [],
+        }
+      : await synthesizeTasteLanes(snapshot);
 
     const run = await prisma.analysisRun.create({
       data: {
