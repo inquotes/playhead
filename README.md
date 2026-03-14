@@ -100,4 +100,4 @@ Primary auth routes:
 - `GET /api/discovery/runs/[runId]/stream`
 - `GET /api/history/analysis/[analysisRunId]`
 
-Legacy username-connect routes may still exist in code for cleanup but are not the primary account flow.
+Account auth is fully Last.fm Web Auth + app-side session based; legacy username-connect routes have been removed.

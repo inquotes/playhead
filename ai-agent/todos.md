@@ -4,7 +4,6 @@
 
 1. Data + API cleanup
 
-- remove stale legacy Last.fm username-connect endpoints after full cutover validation
 - remove remaining MCP-era remnants in code/docs/config
 - align docs with current account-first auth and history behavior
 

@@ -2,7 +2,7 @@
 
 ## Architecture
 - Last.fm REST API is the source of truth for listening and artist metadata (`user.getWeeklyChartList`, `user.getWeeklyArtistChart`, `library.getArtists`, `user.getTopArtists`, `user.getTopTracks`, `user.getRecentTracks`, `artist.getInfo`, `artist.getSimilar`).
-- Auth/account model uses Last.fm Web Auth (`auth.getSession`) with app-side `UserAccount` + `AuthSession` cookies; legacy username-connect routes still exist but are slated for removal.
+- Auth/account model uses Last.fm Web Auth (`auth.getSession`) with app-side `UserAccount` + `AuthSession` cookies.
 - Last.fm integration is centralized in `src/lib/lastfm.ts` (HTTP/retry) and `src/server/lastfm/service.ts` (normalization + DB cache).
 - Discovery pipeline is deterministic in `src/server/discovery/pipeline.ts`; LLM is used only for lane synthesis and recommendation explanations.
 - Async UX remains run-based (`AgentRun`, `AgentRunEvent`, SSE stream) while final outputs are persisted in `AnalysisRun` and `RecommendationRun`.

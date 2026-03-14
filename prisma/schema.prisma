@@ -16,7 +16,6 @@ model VisitorSession {
   userAccount        UserAccount?        @relation(fields: [userAccountId], references: [id], onDelete: SetNull)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
-  lastfmConnection   LastfmConnection?
   analysisRuns       AnalysisRun[]
   recommendationRuns RecommendationRun[]
   agentRuns          AgentRun[]
@@ -61,18 +60,6 @@ model AuthSession {
 
   @@index([userAccountId])
   @@index([expiresAt])
-}
-
-model LastfmConnection {
-  id                 String         @id @default(cuid())
-  visitorSessionId   String         @unique
-  visitorSession     VisitorSession @relation(fields: [visitorSessionId], references: [id], onDelete: Cascade)
-  status             String         @default("disconnected")
-  lastfmUsername     String?
-  authErrorCode      String?
-  lastVerifiedAt     DateTime?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
 }
 
 model AnalysisRun {
