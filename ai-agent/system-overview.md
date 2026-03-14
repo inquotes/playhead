@@ -11,8 +11,11 @@
 ## Core Runtime Model
 - Analyze step builds a `ListeningSnapshot`; if no in-window listening is found, it persists an empty-lane analysis with explicit no-history summary.
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
-- Authenticated self-target runs now warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) before falling back to direct weekly API aggregation.
+- Authenticated self-target runs warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) and now refresh a persisted recent-tail snapshot before lane synthesis.
 - Weekly history indexing is job-backed (`UserWeeklyBackfillJob`) with primary dispatch progression and watchdog rescue for stale/retry states.
+- Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.
+- Pull recency telemetry is persisted in `UserDataPullLog` for both weekly backfill and recent-tail pulls; profile "Data Last Updated" reads from this table.
+- Profile supports a manual refresh action (`POST /api/profile/update-now`) that refreshes recent-tail snapshot immediately and kicks weekly backfill progression.
 - Each lane includes compact `LaneContext` data: representative/member artists, tags, and bounded `similarHints` for warm-start recommendation expansion.
 - Recommend step reuses lane context from `AnalysisRun` and does not rebuild the full listening snapshot.
 - Recommend step fetches broad known history (library-first, cached), filters with the rule: exclude artists with `>= 10` known plays, allow `< 10`.
@@ -23,10 +26,12 @@
 
 ## Account + History UX
 - Landing is account-aware: unauthenticated users see `Connect Last.fm`; authenticated users see `Get Recommendations`.
-- Profile page exists at `/profile` with logout and nested history: analyses with associated recommendation runs.
-- Profile now includes a `Discovery List` section for saved recommendation artists with remove support.
+- Authenticated navigation is global and consistent via shared top-nav pills (`Discovery List`, `Past Recommendations`, `Profile`) with a compact mobile menu.
+- Profile IA is first-class and split across `/profile`, `/profile/discovery-list`, and `/profile/past-recommendations`.
+- `Discovery List` cards now preserve recommendation context at save-time (blurb, album, chips) and link directly to Last.fm artist/album pages.
+- Discovery List cards now include `Plays since saved` (delta from save-time baseline against merged rollup + recent-tail current counts).
 - `Re-Visit` links hydrate stored runs directly into the app via `/?analysisRunId=...` (optionally `&recommendationRunId=...`).
-- Profile history currently shows self-target runs only (`targetLastfmUsername === currentUser.lastfmUsername`).
+- Past Recommendations currently show self-target runs only (`targetLastfmUsername === currentUser.lastfmUsername`).
 - Opening a lane reuses cached saved recommendations for that lane when available; users can explicitly `Refresh recs`.
 
 ## Request Flows

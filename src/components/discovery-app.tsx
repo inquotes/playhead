@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { AuthenticatedNav } from "@/components/authenticated-nav";
 
 type ConnectionStatus = {
   isAuthenticated: boolean;
@@ -691,17 +692,16 @@ export function DiscoveryApp() {
 
   return (
     <div className="mp-shell">
-      {view !== "landing" && (
+      {(view !== "landing" || status?.isAuthenticated) && (
         <header className="mp-topbar">
           <button className="mp-brand" onClick={() => setView("landing")}>
             PLAYHEAD
           </button>
-          <div className="mp-topbar-right">
-            <span className="mp-kicker">ACTIVE USER</span>
-            <Link href="/profile" className="mp-pill mp-pill-link">
-              {username}
-            </Link>
-          </div>
+          {status?.isAuthenticated ? (
+            <div className="mp-topbar-right">
+              <AuthenticatedNav />
+            </div>
+          ) : null}
         </header>
       )}
 

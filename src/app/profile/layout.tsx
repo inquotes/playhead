@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
+import { AuthenticatedNav } from "@/components/authenticated-nav";
 
 export default async function ProfileLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUserAccount();
@@ -12,21 +13,10 @@ export default async function ProfileLayout({ children }: { children: React.Reac
     <main className="mp-page">
       <section className="mp-panel mp-panel-wide">
         <div className="mp-profile-nav-row">
-          <p className="mp-kicker">ACCOUNT</p>
-          <nav className="mp-profile-nav" aria-label="Profile sections">
-            <Link href="/profile" className="mp-pill mp-pill-link">
-              Profile
-            </Link>
-            <Link href="/profile/discovery-list" className="mp-pill mp-pill-link">
-              Discovery List
-            </Link>
-            <Link href="/profile/past-recommendations" className="mp-pill mp-pill-link">
-              Past Recommendations
-            </Link>
-            <Link href="/" className="mp-pill">
-              Back Home
-            </Link>
-          </nav>
+          <Link href="/" className="mp-profile-brand-link">
+            PLAYHEAD
+          </Link>
+          <AuthenticatedNav />
         </div>
 
         <div className="mp-divider" />

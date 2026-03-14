@@ -78,10 +78,10 @@ input {
 .mp-brand {
   border: 0;
   background: transparent;
-  color: var(--ink-tertiary);
+  color: var(--ink-secondary);
   cursor: pointer;
   font-family: var(--font-jetbrains-mono), monospace;
-  font-size: 0.69rem;
+  font-size: 0.82rem;
   letter-spacing: 0.18em;
 }
 
@@ -89,6 +89,21 @@ input {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.mp-auth-nav {
+  position: relative;
+}
+
+.mp-auth-nav-desktop {
+  display: flex;
+  align-items: center;
+  gap: 0.58rem;
+  flex-wrap: wrap;
+}
+
+.mp-auth-nav-mobile {
+  display: none;
 }
 
 .mp-kicker {
@@ -120,6 +135,13 @@ input {
   border-color: var(--accent-light);
   background: color-mix(in oklab, var(--accent-soft) 88%, white 12%);
   color: color-mix(in oklab, var(--accent) 92%, #4a2b6b 8%);
+}
+
+.mp-pill-link.is-active {
+  border-color: var(--accent-light);
+  background: color-mix(in oklab, var(--accent-soft) 92%, white 8%);
+  color: color-mix(in oklab, var(--accent) 95%, #4a2b6b 5%);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent-light) 38%, transparent 62%);
 }
 
 .mp-link {
@@ -217,6 +239,20 @@ input {
   flex-wrap: wrap;
 }
 
+.mp-profile-brand-link {
+  color: var(--ink-secondary);
+  text-decoration: none;
+  font-family: var(--font-jetbrains-mono), monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.mp-profile-brand-link:hover,
+.mp-profile-brand-link:focus-visible {
+  color: color-mix(in oklab, var(--accent) 88%, #4a2b6b 12%);
+}
+
 .mp-profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -299,6 +335,20 @@ input {
   font-size: 0.9rem;
 }
 
+.mp-history-remediation {
+  margin-top: 0.55rem;
+}
+
+.mp-update-now-wrap {
+  display: grid;
+  justify-items: end;
+  gap: 0.2rem;
+}
+
+.mp-update-now-wrap .mp-button {
+  min-width: 96px;
+}
+
 .mp-profile-mini-label {
   margin: 0;
   color: var(--ink-tertiary);
@@ -325,6 +375,22 @@ input {
 
 .mp-progress-module strong {
   font-size: 1.6rem;
+}
+
+.mp-history-modules {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.mp-module-value {
+  font-size: 1.55rem;
+  line-height: 1.1;
+}
+
+.mp-module-value-text {
+  font-size: 1.05rem;
+  line-height: 1.25;
 }
 
 .mp-info-dot {
@@ -429,6 +495,12 @@ input {
 .mp-profile-card strong {
   font-size: 1rem;
   font-weight: 500;
+}
+
+.mp-profile-connect {
+  margin-top: 0.55rem;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
 }
 
 .mp-muted {
@@ -1077,9 +1149,53 @@ input {
 
 .mp-saved-date {
   margin: 0;
-  margin-left: auto;
   font-size: 0.75rem;
   color: var(--ink-tertiary);
+}
+
+.mp-saved-separator {
+  color: var(--ink-tertiary);
+  font-size: 0.75rem;
+}
+
+.mp-saved-progress {
+  margin: 0;
+  font-size: 0.84rem;
+}
+
+.mp-saved-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.mp-saved-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.mp-saved-remove {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mp-saved-remove:hover:enabled,
+.mp-saved-remove:focus-visible {
+  color: color-mix(in oklab, var(--accent) 90%, #4a2b6b 10%);
+  text-decoration: underline;
+}
+
+.mp-saved-remove:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .mp-history-nested {
@@ -1148,6 +1264,10 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .mp-history-modules {
+    grid-template-columns: 1fr;
+  }
+
   .mp-profile-hero-groups {
     grid-template-columns: 1fr;
   }
@@ -1155,15 +1275,56 @@ input {
 
 @media (max-width: 640px) {
   .mp-topbar {
-    height: auto;
-    padding: 0.75rem;
-    align-items: flex-start;
-    gap: 0.35rem;
-    flex-direction: column;
+    height: 56px;
+    padding: 0 0.75rem;
+    align-items: center;
+    gap: 0.5rem;
+    flex-direction: row;
   }
 
   .mp-topbar-right {
-    flex-wrap: wrap;
+    margin-left: auto;
+  }
+
+  .mp-auth-nav-desktop {
+    display: none;
+  }
+
+  .mp-auth-nav-mobile {
+    display: block;
+  }
+
+  .mp-auth-nav-trigger {
+    border: 1px solid var(--border-faint);
+    background: var(--surface-subtle);
+    color: color-mix(in oklab, var(--accent) 90%, #4a2b6b 10%);
+    border-radius: 999px;
+    padding: 0.28rem 0.62rem;
+    font-family: var(--font-jetbrains-mono), monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .mp-auth-nav-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    min-width: 190px;
+    border: 1px solid var(--border-faint);
+    background: color-mix(in oklab, var(--surface) 92%, white 8%);
+    border-radius: 10px;
+    padding: 0.5rem;
+    box-shadow: 0 8px 24px color-mix(in oklab, black 10%, transparent 90%);
+    z-index: 40;
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .mp-auth-nav-menu .mp-pill {
+    display: block;
+    text-align: center;
   }
 
   .mp-range-grid {

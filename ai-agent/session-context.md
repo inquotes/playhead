@@ -39,12 +39,13 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Next feature: history/profile UX polish (Profile home stats/backfill UX + app-level navigation polish).
+- Next feature: history/profile UX polish (Profile home stats/backfill UX follow-through).
 - Then: legacy API cleanup and docs alignment.
 - Then: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).
 
 ## Recent Completed Work
 - Profile/navigation IA: first-class pages at `/profile`, `/profile/discovery-list`, and `/profile/past-recommendations`.
+- Global authenticated navigation: shared top-nav pills (`Discovery List`, `Past Recommendations`, `Profile`) with compact mobile menu.
 - Past Recommendations now supports pagination/load-more.
 - Profile hero stats (v1):
   - listening-history metric: Explored Artists (`>=10`) out of Total Artists

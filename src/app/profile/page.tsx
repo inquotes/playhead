@@ -3,10 +3,36 @@ import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { LogoutButton } from "./logout-button";
+import { UpdateNowButton } from "./update-now-button";
 
 function formatMonthYearFromUnix(value: number | null): string {
   if (!value) return "n/a";
   return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(value * 1000));
+}
+
+function formatConnectedAt(value: Date | null): string {
+  if (!value) return "n/a";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(value);
+}
+
+function formatLastUpdatedAt(value: Date | null): { date: string; time: string } {
+  if (!value) return { date: "n/a", time: "" };
+  const date = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(value);
+  const time = new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(value);
+  return { date, time };
 }
 
 function backfillStatusLabel(params: {
@@ -31,14 +57,20 @@ export default async function ProfilePage() {
   }
 
   const name = user.displayName ?? user.lastfmUsername;
-  const [totalHistoryArtists, exploredArtists, weeklyState, savedArtists] = await Promise.all([
-    prisma.userKnownArtistRollup.count({
+  const connectedAtLabel = formatConnectedAt(user.lastLoginAt ?? user.createdAt);
+  const [knownArtistRollupRows, recentTailRows, weeklyState, latestDataPull, savedArtists] = await Promise.all([
+    prisma.userKnownArtistRollup.findMany({
       where: { userAccountId: user.id },
+      select: {
+        normalizedName: true,
+        playcount: true,
+      },
     }),
-    prisma.userKnownArtistRollup.count({
-      where: {
-        userAccountId: user.id,
-        playcount: { gte: 10 },
+    prisma.userRecentTailArtistCount.findMany({
+      where: { userAccountId: user.id },
+      select: {
+        normalizedName: true,
+        playcount: true,
       },
     }),
     prisma.userWeeklyListeningState.findUnique({
@@ -48,7 +80,17 @@ export default async function ProfilePage() {
         weeksProcessed: true,
         weeksDiscovered: true,
         oldestWeekStart: true,
+        lastSuccessAt: true,
         fullHistoryReadyAt: true,
+      },
+    }),
+    prisma.userDataPullLog.aggregate({
+      where: {
+        userAccountId: user.id,
+        status: "success",
+      },
+      _max: {
+        pulledAt: true,
       },
     }),
     prisma.savedArtist.findMany({
@@ -60,8 +102,23 @@ export default async function ProfilePage() {
     }),
   ]);
 
+  const mergedPlaycountByName = new Map<string, number>();
+  for (const row of knownArtistRollupRows) {
+    mergedPlaycountByName.set(row.normalizedName, row.playcount);
+  }
+  for (const row of recentTailRows) {
+    const previous = mergedPlaycountByName.get(row.normalizedName) ?? 0;
+    mergedPlaycountByName.set(row.normalizedName, previous + row.playcount);
+  }
+
+  const totalHistoryArtists = mergedPlaycountByName.size;
+  const exploredArtists = [...mergedPlaycountByName.values()].reduce((count, playcount) => {
+    return playcount >= 10 ? count + 1 : count;
+  }, 0);
+
   const savedArtistCount = savedArtists.length;
   const savedNames = [...new Set(savedArtists.map((artist) => artist.normalizedName))];
+  const savedNameSet = new Set(savedNames);
   const savedArtistRollups = savedNames.length
     ? await prisma.userKnownArtistRollup.findMany({
         where: {
@@ -76,6 +133,11 @@ export default async function ProfilePage() {
     : [];
 
   const currentPlaycountByName = new Map(savedArtistRollups.map((row) => [row.normalizedName, row.playcount]));
+  for (const row of recentTailRows) {
+    if (!savedNameSet.has(row.normalizedName)) continue;
+    const previous = currentPlaycountByName.get(row.normalizedName) ?? 0;
+    currentPlaycountByName.set(row.normalizedName, previous + row.playcount);
+  }
   const progressedSavedArtists = savedArtists.reduce((count, artist) => {
     const currentPlaycount = currentPlaycountByName.get(artist.normalizedName) ?? 0;
     if (artist.knownPlaycountAtSave == null) {
@@ -92,22 +154,24 @@ export default async function ProfilePage() {
   const weeksProcessed = weeklyState?.weeksProcessed ?? 0;
   const weeksDiscovered = weeklyState?.weeksDiscovered ?? 0;
   const scrobblingSince = formatMonthYearFromUnix(weeklyState?.oldestWeekStart ?? null);
+  const historyLastUpdated = formatLastUpdatedAt(latestDataPull._max.pulledAt ?? weeklyState?.lastSuccessAt ?? null);
   const statusLabel = backfillStatusLabel({
     fullHistoryReadyAt: weeklyState?.fullHistoryReadyAt ?? null,
     status: weeklyState?.status ?? null,
     weeksProcessed,
     weeksDiscovered,
   });
+  const missingWeeks = Math.max(0, weeksDiscovered - weeksProcessed);
 
   return (
     <section>
       <p className="mp-kicker">PROFILE HOME</p>
       <h2>{name}</h2>
-      <p className="mp-muted">Last.fm username: {user.lastfmUsername}</p>
+      <p className="mp-kicker mp-profile-connect">LAST.FM CONNECTED @ {connectedAtLabel}</p>
 
       <article className="mp-profile-hero" style={{ marginTop: "1rem" }}>
         <p className="mp-kicker">PROFILE STATS</p>
-        <h3>Listening + discovery snapshot</h3>
+        <h3>Listening + Discovery Snapshot</h3>
 
         <div className="mp-profile-stat-flow">
           <article className="mp-profile-stat-card is-primary">
@@ -152,23 +216,42 @@ export default async function ProfilePage() {
                   <p className="mp-profile-subtext">of {savedArtistCount} saved artists</p>
                 </div>
               </div>
-            </article>
+          </article>
 
           <article className="mp-profile-stat-card">
             <div className="mp-profile-stat-head">
-              <p className="mp-kicker">BACKFILL</p>
-              <span className={`mp-status-chip is-${statusLabel.toLowerCase()}`}>{statusLabel}</span>
+              <p className="mp-kicker">HISTORY</p>
+              <UpdateNowButton />
             </div>
-            <p className="mp-profile-mini-label">Scrobbling since</p>
-            <strong>{scrobblingSince}</strong>
-            <p className="mp-profile-subtext">
-              {weeksProcessed} / {weeksDiscovered} weeks indexed
-            </p>
-          </article>
-        </div>
+            <div className="mp-history-modules">
+              <div className="mp-progress-module">
+                <p className="mp-profile-mini-label">Scrobbling Since</p>
+                <strong className="mp-module-value">{scrobblingSince}</strong>
+              </div>
 
-        <div className="mp-profile-subsection">
-          <p className="mp-muted">Listening history stats use your indexed Last.fm history. Discovery progress uses your saved Discovery List only.</p>
+              <div className="mp-progress-module">
+                <div className="mp-profile-stat-head">
+                  <p className="mp-profile-mini-label">Data Backfilled</p>
+                  <span className={`mp-status-chip is-${statusLabel.toLowerCase()}`}>{statusLabel}</span>
+                </div>
+                <strong className="mp-module-value">
+                  {weeksProcessed} / {weeksDiscovered}
+                </strong>
+                <p className="mp-profile-subtext">weeks indexed</p>
+              </div>
+
+              <div className="mp-progress-module">
+                <p className="mp-profile-mini-label">Data Last Updated</p>
+                <strong className="mp-module-value-text">{historyLastUpdated.date}</strong>
+                {historyLastUpdated.time && <p className="mp-profile-subtext">{historyLastUpdated.time}</p>}
+              </div>
+            </div>
+            {statusLabel === "Incomplete" && (
+              <p className="mp-profile-subtext mp-history-remediation">
+                History needs attention. {missingWeeks > 0 ? `${missingWeeks} week${missingWeeks === 1 ? "" : "s"} still missing.` : "Try Update now to retry."}
+              </p>
+            )}
+          </article>
         </div>
       </article>
 

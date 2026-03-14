@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { getWeeklyArtistChart, getWeeklyChartList } from "@/lib/lastfm";
 import { prisma } from "@/server/db";
+import { recordDataPull } from "@/server/lastfm/data-pulls";
 
 type WeeklyWindow = { from: number; to: number };
 type Coverage = "full_recent_year" | "partial";
@@ -371,6 +372,11 @@ async function finishJob(params: {
         lastErrorMessage: null,
       },
     });
+    await recordDataPull({
+      userAccountId: params.userAccountId,
+      source: "weekly_backfill",
+      status: "success",
+    });
     return;
   }
 
@@ -407,6 +413,12 @@ async function finishJob(params: {
       lastErrorCode: params.hadErrors ? "week_errors" : null,
       lastErrorMessage: params.hadErrors ? "Some weekly chart windows failed and will retry." : null,
     },
+  });
+
+  await recordDataPull({
+    userAccountId: params.userAccountId,
+    source: "weekly_backfill",
+    status: "success",
   });
 }
 
@@ -523,6 +535,13 @@ async function runClaimedJob(params: {
         lastErrorCode: "job_error",
         lastErrorMessage: error instanceof Error ? error.message : "Backfill job failed.",
       },
+    });
+
+    await recordDataPull({
+      userAccountId: params.userAccountId,
+      source: "weekly_backfill",
+      status: "failed",
+      errorMessage: error instanceof Error ? error.message : "Backfill job failed.",
     });
   }
 }

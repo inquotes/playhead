@@ -6,6 +6,7 @@ type DiscoveryListItem = {
   id: string;
   artistName: string;
   savedAt: string;
+  playsSinceSaved: number;
   recommendationContext: {
     blurb?: string;
     recommendedAlbum?: string | null;
@@ -101,15 +102,15 @@ export function DiscoveryListSection({ initialItems }: DiscoveryListSectionProps
                   </div>
                 )}
               </div>
-              <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.6rem" }}>
-                <button
-                  className="mp-button mp-button-ghost mp-button-compact"
-                  onClick={() => void removeSavedArtist(item.id)}
-                  disabled={removingId === item.id}
-                >
-                  {removingId === item.id ? "Removing..." : "Remove"}
-                </button>
-                <p className="mp-muted mp-saved-date">Saved {formatDate(item.savedAt)}</p>
+              <div className="mp-saved-footer" style={{ marginTop: "0.6rem" }}>
+                <p className="mp-muted mp-saved-progress">Plays since saved: +{item.playsSinceSaved}</p>
+                <div className="mp-saved-meta-actions">
+                  <p className="mp-muted mp-saved-date">Saved {formatDate(item.savedAt)}</p>
+                  <span className="mp-saved-separator">/</span>
+                  <button className="mp-saved-remove" onClick={() => void removeSavedArtist(item.id)} disabled={removingId === item.id}>
+                    {removingId === item.id ? "Removing..." : "Remove"}
+                  </button>
+                </div>
               </div>
             </article>
           ))}

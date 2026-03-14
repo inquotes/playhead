@@ -2,19 +2,7 @@
 
 ## Current Focus (Next)
 
-1. History + app UX polish
-   - smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
-   - add a top-nav entry for Discovery List so it is directly reachable from app flow
-   - tighten empty-state copy and CTAs across no-data/no-recs flows
-
-2. Profile stats follow-up (v1 shipped)
-   - add clearer backfill remediation UX when status is `Incomplete`
-   - optionally add per-artist discovery progress signals in Discovery List (last heard, recent scrobbles)
-
-3. Latency follow-up
-   - set long-term latency budgets after more production-like usage
-
-## Data + API Cleanup (Later)
+1. Data + API cleanup
 
 - remove stale legacy Last.fm username-connect endpoints after full cutover validation
 - remove remaining MCP-era remnants in code/docs/config
@@ -29,6 +17,11 @@
 
 - outbound links expansion on recommendation cards (Apple Music / Spotify when mapping confidence is high)
 - standalone artist pages in-app (instead of routing to Last.fm), including artist-specific recommendation flows to find new recommendations from one selected artist
+- smoother returning-user auth UX: support quick re-login on known devices after first Last.fm connect, with full OAuth as fallback.
+- logout UX split: keep standard logout simple, and add an explicit "forget this device" option for full sign-out/re-auth behavior.
+- smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
+- tighten empty-state copy and CTAs across no-data/no-recs flows
+- set long-term latency budgets after more production-like usage
 - preference controls for recommendation filtering
   - "I dislike this artist" + persistent blocklist
   - "Artists I love" positive weighting
