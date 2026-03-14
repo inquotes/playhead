@@ -602,6 +602,10 @@ input {
   justify-content: center;
 }
 
+.mp-center-cta.is-after-custom {
+  margin-top: 1.35rem;
+}
+
 .mp-analyzing {
   align-items: center;
 }
@@ -861,6 +865,7 @@ input {
 
 .mp-custom-range {
   margin-top: 0.6rem;
+  margin-bottom: 1.05rem;
   padding: 0.8rem;
   border: 1px solid var(--border-faint);
   border-radius: 10px;
@@ -868,7 +873,35 @@ input {
 }
 
 .mp-target-toggle-row {
-  margin-top: 0.85rem;
+  margin-top: 0.95rem;
+  display: flex;
+  justify-content: center;
+}
+
+.mp-tertiary-action {
+  border: 0;
+  background: transparent;
+  display: block;
+  margin: 0 auto;
+  padding: 0.1rem 0.2rem;
+  color: var(--accent);
+  font-family: var(--font-jetbrains-mono), monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.mp-tertiary-action:hover:enabled,
+.mp-tertiary-action:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mp-tertiary-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .mp-target-user-panel {

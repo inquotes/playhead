@@ -5,7 +5,6 @@
 1. History + app UX polish
    - smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
    - add a top-nav entry for Discovery List so it is directly reachable from app flow
-   - improve visual appearance/prominence of the "Analyze a different user" button
    - tighten empty-state copy and CTAs across no-data/no-recs flows
 
 2. Profile stats follow-up (v1 shipped)

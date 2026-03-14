@@ -842,7 +842,7 @@ export function DiscoveryApp() {
               </section>
             )}
 
-            <div className="mp-center-cta">
+            <div className={`mp-center-cta ${selectedRange === "custom" ? "is-after-custom" : ""}`}>
               <button
                 className="mp-button mp-button-primary"
                 onClick={runAnalysis}
@@ -857,14 +857,14 @@ export function DiscoveryApp() {
               </button>
             </div>
 
-            <div className="mp-actions-row mp-actions-left mp-target-toggle-row">
+            <div className="mp-target-toggle-row">
               {!targetMode ? (
-                <button className="mp-button mp-button-ghost mp-button-compact" onClick={() => setTargetMode(true)} disabled={busy}>
-                  Analyze a different user
+                <button className="mp-tertiary-action" onClick={() => setTargetMode(true)} disabled={busy}>
+                  ANALYZE A DIFFERENT USER
                 </button>
               ) : (
-                <button className="mp-button mp-button-ghost mp-button-compact" onClick={resetTargetUser} disabled={busy}>
-                  Use my account instead
+                <button className="mp-tertiary-action" onClick={resetTargetUser} disabled={busy}>
+                  USE MY ACCOUNT INSTEAD
                 </button>
               )}
             </div>
