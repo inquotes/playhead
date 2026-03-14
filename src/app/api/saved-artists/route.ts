@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
+
+const recommendationContextSchema = z.object({
+  blurb: z.string().trim().min(1).max(320).optional(),
+  recommendedAlbum: z.string().trim().min(1).max(160).nullable().optional(),
+  chips: z.array(z.string().trim().min(1).max(80)).min(1).max(3).optional(),
+});
 
 const createSavedArtistSchema = z.object({
   artistName: z.string().trim().min(1),
@@ -12,6 +19,7 @@ const createSavedArtistSchema = z.object({
   savedFromTargetUsername: z.string().trim().min(1).optional(),
   knownPlaycountAtSave: z.number().int().min(0).optional(),
   knownArtistAtSave: z.boolean().optional(),
+  recommendationContext: recommendationContextSchema.optional(),
 });
 
 function normalizeArtistName(value: string): string {
@@ -40,6 +48,7 @@ export async function GET() {
         savedFromTargetUsername: true,
         knownPlaycountAtSave: true,
         knownArtistAtSave: true,
+        recommendationContextJson: true,
       },
     });
 
@@ -66,6 +75,25 @@ export async function POST(request: Request) {
     const payload = createSavedArtistSchema.parse(await request.json());
     const artistName = payload.artistName.trim();
     const normalizedName = normalizeArtistName(artistName);
+    const rollupAtSave = await prisma.userKnownArtistRollup.findUnique({
+      where: {
+        userAccountId_normalizedName: {
+          userAccountId: user.id,
+          normalizedName,
+        },
+      },
+      select: {
+        playcount: true,
+      },
+    });
+    const knownPlaycountAtSave = rollupAtSave?.playcount ?? 0;
+    const recommendationContext = payload.recommendationContext
+      ? {
+          blurb: payload.recommendationContext.blurb,
+          recommendedAlbum: payload.recommendationContext.recommendedAlbum ?? null,
+          chips: payload.recommendationContext.chips,
+        }
+      : null;
 
     const existing = await prisma.savedArtist.findUnique({
       where: {
@@ -79,14 +107,46 @@ export async function POST(request: Request) {
         artistName: true,
         normalizedName: true,
         savedAt: true,
+        knownPlaycountAtSave: true,
+        recommendationContextJson: true,
       },
     });
 
     if (existing) {
+      const updateData: Prisma.SavedArtistUpdateInput = {};
+      if (recommendationContext) {
+        updateData.recommendationContextJson = recommendationContext as Prisma.InputJsonValue;
+      }
+      if (existing.knownPlaycountAtSave == null) {
+        updateData.knownPlaycountAtSave = knownPlaycountAtSave;
+        updateData.knownArtistAtSave = knownPlaycountAtSave >= 10;
+      }
+
+      const updated =
+        Object.keys(updateData).length > 0
+          ? await prisma.savedArtist.update({
+              where: {
+                userAccountId_normalizedName: {
+                  userAccountId: user.id,
+                  normalizedName,
+                },
+              },
+              data: updateData,
+              select: {
+                id: true,
+                artistName: true,
+                normalizedName: true,
+                savedAt: true,
+                knownPlaycountAtSave: true,
+                recommendationContextJson: true,
+              },
+            })
+          : existing;
+
       const response = NextResponse.json({
         ok: true,
         alreadySaved: true,
-        savedArtist: existing,
+        savedArtist: updated,
       });
       return attachVisitorCookie(response, visitorContext);
     }
@@ -100,14 +160,17 @@ export async function POST(request: Request) {
         savedFromAnalysisRunId: payload.savedFromAnalysisRunId,
         savedFromLaneId: payload.savedFromLaneId,
         savedFromTargetUsername: payload.savedFromTargetUsername,
-        knownPlaycountAtSave: payload.knownPlaycountAtSave,
-        knownArtistAtSave: payload.knownArtistAtSave,
+        knownPlaycountAtSave,
+        knownArtistAtSave: knownPlaycountAtSave >= 10,
+        recommendationContextJson: recommendationContext as Prisma.InputJsonValue,
       },
       select: {
         id: true,
         artistName: true,
         normalizedName: true,
         savedAt: true,
+        knownPlaycountAtSave: true,
+        recommendationContextJson: true,
       },
     });
 

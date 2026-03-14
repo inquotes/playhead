@@ -77,6 +77,11 @@ type SavedArtistRecord = {
   artistName: string;
   normalizedName: string;
   savedAt: string;
+  recommendationContextJson?: {
+    blurb?: string;
+    recommendedAlbum?: string | null;
+    chips?: string[];
+  } | null;
 };
 
 type AgentLiveEvent = {
@@ -181,6 +186,16 @@ export function DiscoveryApp() {
   const username = status?.user?.displayName ?? status?.user?.lastfmUsername ?? "listener";
   const selfUsername = status?.user?.lastfmUsername ?? null;
   const selectedLane = useMemo(() => lanes.find((lane) => lane.id === selectedLaneId) ?? null, [lanes, selectedLaneId]);
+  const sidebarCoreArtists = useMemo(() => {
+    if (!selectedLane) return [];
+    return uniqueArtists(selectedLane.artists);
+  }, [selectedLane]);
+  const sidebarMoreArtists = useMemo(() => {
+    if (!selectedLane) return [];
+
+    const coreSet = new Set(sidebarCoreArtists.map((artist) => artist.toLowerCase()));
+    return uniqueArtists(selectedLane.memberArtists ?? []).filter((artist) => !coreSet.has(artist.toLowerCase()));
+  }, [selectedLane, sidebarCoreArtists]);
   const selectedLaneHasSeedData = useMemo(() => {
     if (!selectedLane) return false;
     return (
@@ -362,8 +377,9 @@ export function DiscoveryApp() {
     window.location.href = "/api/auth/lastfm/start?next=/";
   }
 
-  async function saveArtist(artistName: string) {
+  async function saveArtist(rec: Recommendation) {
     if (!status?.isAuthenticated) return;
+    const artistName = rec.artist;
     const normalizedName = normalizeArtistName(artistName);
     if (savedArtistNameSet.has(normalizedName)) return;
 
@@ -371,6 +387,11 @@ export function DiscoveryApp() {
     setSaveError(null);
 
     const selectedRecommendationRunId = selectedLaneId ? (recommendationByLane.get(selectedLaneId)?.id ?? undefined) : undefined;
+    const recommendationChips = [rec.matchSource, ...(rec.tags ?? [])]
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .filter((item, index, list) => list.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index)
+      .slice(0, 3);
 
     try {
       const data = await jsonFetch<{ ok: true; savedArtist: SavedArtistRecord }>("/api/saved-artists", {
@@ -381,6 +402,11 @@ export function DiscoveryApp() {
           savedFromAnalysisRunId: analysisRunId ?? undefined,
           savedFromLaneId: selectedLaneId ?? undefined,
           savedFromTargetUsername: analysisTargetUsername ?? selfUsername ?? undefined,
+          recommendationContext: {
+            blurb: rec.blurb ?? rec.reason,
+            recommendedAlbum: rec.recommendedAlbum ?? null,
+            chips: recommendationChips,
+          },
         }),
       });
 
@@ -950,18 +976,47 @@ export function DiscoveryApp() {
 
             <div className="mp-block">
               <p className="mp-kicker">CORE ARTISTS</p>
-              {uniqueArtists(selectedLane.artists).length > 0 ? (
+              {sidebarCoreArtists.length > 0 ? (
                 <div className="mp-tag-wrap">
-                  {uniqueArtists(selectedLane.artists).map((artist) => (
-                    <span key={`${selectedLane.id}-${artist.toLowerCase()}`} className="mp-tag">
+                  {sidebarCoreArtists.map((artist) => (
+                    <a
+                      key={`${selectedLane.id}-${artist.toLowerCase()}`}
+                      className="mp-tag mp-tag-link"
+                      href={`https://www.last.fm/music/${encodeURIComponent(artist)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
                       {artist}
-                    </span>
+                    </a>
                   ))}
                 </div>
               ) : (
                 <p className="mp-muted">No clear lane artists found yet. Try rerunning analysis.</p>
               )}
             </div>
+
+            {sidebarMoreArtists.length > 0 && (
+              <div className="mp-block">
+                <details className="mp-collapsible-section">
+                  <summary>
+                    <span className="mp-kicker">MORE ARTISTS IN THIS CLUSTER ({sidebarMoreArtists.length})</span>
+                  </summary>
+                  <div className="mp-tag-wrap mp-tag-wrap-compact">
+                    {sidebarMoreArtists.map((artist) => (
+                      <a
+                        key={`${selectedLane.id}-more-${artist.toLowerCase()}`}
+                        className="mp-tag mp-tag-link"
+                        href={`https://www.last.fm/music/${encodeURIComponent(artist)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {artist}
+                      </a>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            )}
 
             <div className="mp-divider" />
 
@@ -1032,15 +1087,26 @@ export function DiscoveryApp() {
                     </a>
                   </h3>
                   <p>{rec.blurb ?? rec.reason ?? "A strong fit for this lane."}</p>
-                  {rec.recommendedAlbum && <small>Start with album: {rec.recommendedAlbum}</small>}
-                  <small>Seeded from {rec.matchSource}</small>
+                  {rec.recommendedAlbum && (
+                    <small>
+                      Start with album:{" "}
+                      <a
+                        className="mp-rec-album-link"
+                        href={`https://www.last.fm/music/${encodeURIComponent(rec.artist)}/${encodeURIComponent(rec.recommendedAlbum)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {rec.recommendedAlbum}
+                      </a>
+                    </small>
+                  )}
                   <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.7rem" }}>
                     {savedArtistNameSet.has(normalizeArtistName(rec.artist)) ? (
                       <span className="mp-chip">Saved to Discovery List</span>
                     ) : (
                       <button
                         className="mp-button mp-button-ghost mp-button-compact"
-                        onClick={() => void saveArtist(rec.artist)}
+                        onClick={() => void saveArtist(rec)}
                         disabled={savingArtistName === rec.artist}
                       >
                         {savingArtistName === rec.artist ? "Saving..." : "Save to Discovery List"}

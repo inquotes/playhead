@@ -38,10 +38,25 @@
 - Enforce run timeouts and fail fast with clear user-visible errors.
 
 ## Current Roadmap Focus
-- Next feature: analyze/recommend latency optimization, especially `llmLaneModelMs` and recommendation stage timing.
-- Then: history/profile IA and UX polish (including listening-history page + backfill status UX).
+- Latency pass is stabilized for now (nano + low effort + benchmark path in place).
+- Next feature: history/profile UX polish (Profile home stats/backfill UX + app-level navigation polish).
 - Then: legacy API cleanup and docs alignment.
 - Then: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).
+
+## Recent Completed Work
+- Profile/navigation IA: first-class pages at `/profile`, `/profile/discovery-list`, and `/profile/past-recommendations`.
+- Past Recommendations now supports pagination/load-more.
+- Profile hero stats (v1):
+  - listening-history metric: Explored Artists (`>=10`) out of Total Artists
+  - discovery metric: Progressed + Explored saved artists
+  - backfill metric: `Complete|Running|Incomplete`, scrobbling since, and indexed weeks
+- Discovery List improvements:
+  - artist + album links to Last.fm
+  - saved recommendation context (blurb, album, chips)
+  - "Recommendation based on" chips in list cards
+  - save-time baseline capture (`knownPlaycountAtSave`) for progress tracking
+- Recommendation card simplification: removed "Seeded from ..." and made album links clickable.
+- Cluster detail sidebar: added collapsible "More artists in this cluster" and improved member-artist expansion.
 
 ## Commands
 - `npm run lint`

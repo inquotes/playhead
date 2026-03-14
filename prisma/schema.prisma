@@ -176,6 +176,7 @@ model SavedArtist {
   savedFromTargetUsername    String?
   knownPlaycountAtSave       Int?
   knownArtistAtSave          Boolean?
+  recommendationContextJson  Json?
   savedAt                    DateTime    @default(now())
   updatedAt                  DateTime    @updatedAt
 

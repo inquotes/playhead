@@ -146,6 +146,46 @@ function uniqueNormalizedArtists(values: string[]): string[] {
   return output;
 }
 
+function countTagOverlap(candidateTags: string[], laneTags: string[]): number {
+  if (candidateTags.length === 0 || laneTags.length === 0) return 0;
+  const laneTagSet = new Set(laneTags.map((tag) => tag.toLowerCase()));
+  return candidateTags.reduce((count, tag) => {
+    return laneTagSet.has(tag.toLowerCase()) ? count + 1 : count;
+  }, 0);
+}
+
+function expandLaneMemberArtists(params: {
+  representativeArtists: string[];
+  memberArtists: string[];
+  laneTags: string[];
+  artistProfiles: ArtistProfile[];
+}): string[] {
+  const representativeArtists = uniqueNormalizedArtists(params.representativeArtists);
+  const seedMembers = uniqueNormalizedArtists([...params.memberArtists, ...representativeArtists]);
+  const targetCount = Math.min(15, representativeArtists.length + 4);
+  if (seedMembers.length >= targetCount) {
+    return seedMembers.slice(0, targetCount);
+  }
+
+  const used = new Set(seedMembers.map((artist) => normalizeArtist(artist)));
+  const rankedCandidates = [...params.artistProfiles]
+    .filter((profile) => !used.has(profile.normalizedName))
+    .sort((a, b) => {
+      const overlapDiff = countTagOverlap(b.tags, params.laneTags) - countTagOverlap(a.tags, params.laneTags);
+      if (overlapDiff !== 0) return overlapDiff;
+      return b.periodPlaycount - a.periodPlaycount;
+    });
+
+  const output = [...seedMembers];
+  for (const candidate of rankedCandidates) {
+    if (output.length >= targetCount) break;
+    output.push(candidate.artistName);
+    used.add(candidate.normalizedName);
+  }
+
+  return output;
+}
+
 function cleanBioSnippet(value: string): string {
   return value
     .replace(/<[^>]+>/g, " ")
@@ -358,13 +398,20 @@ function buildFallbackLanes(snapshot: ListeningSnapshot): {
         .filter((profile) => lane.tags.some((tag) => profile.tags.some((artistTag) => artistTag.includes(tag))))
         .slice(0, 10)
         .map((profile) => profile.artistName);
+      const representativeArtists = lane.artists.slice(0, 6);
+      const expandedMembers = expandLaneMemberArtists({
+        representativeArtists,
+        memberArtists,
+        laneTags: lane.tags,
+        artistProfiles: snapshot.artistProfiles,
+      });
 
       return {
         id: lane.id || `lane-${index + 1}`,
         label: lane.name,
         description: lane.description,
-        representativeArtists: lane.artists.slice(0, 6),
-        memberArtists: memberArtists.length > 0 ? memberArtists : lane.artists,
+        representativeArtists,
+        memberArtists: expandedMembers,
         confidence: lane.confidence,
         sourceWindow: snapshot.timeWindow.label,
         context: {
@@ -482,14 +529,26 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         .filter(Boolean)
         .slice(0, 6);
 
-      const totalPlays = (memberArtists.length > 0 ? memberArtists : representativeArtists).reduce(
+      const laneTagSeed = summarizeTags(
+        snapshot.artistProfiles.filter((profile) =>
+          new Set(uniqueNormalizedArtists([...memberArtists, ...representativeArtists]).map(normalizeArtist)).has(profile.normalizedName),
+        ),
+      ).slice(0, 6);
+      const expandedMembers = expandLaneMemberArtists({
+        representativeArtists,
+        memberArtists,
+        laneTags: laneTagSeed,
+        artistProfiles: snapshot.artistProfiles,
+      });
+
+      const totalPlays = expandedMembers.reduce(
         (sum, name) => sum + (periodPlayMap.get(normalizeArtist(name)) ?? 0),
         0,
       );
 
       const tags = summarizeTags(
         snapshot.artistProfiles.filter((profile) =>
-          new Set((memberArtists.length > 0 ? memberArtists : representativeArtists).map(normalizeArtist)).has(profile.normalizedName),
+          new Set(expandedMembers.map(normalizeArtist)).has(profile.normalizedName),
         ),
       ).slice(0, 6);
 
@@ -502,7 +561,7 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
           tags,
         }),
         representativeArtists,
-        memberArtists: memberArtists.length > 0 ? memberArtists : representativeArtists,
+        memberArtists: expandedMembers,
         confidence: Math.min(1, Math.max(0, lane.confidence)),
         sourceWindow: snapshot.timeWindow.label,
         context: {

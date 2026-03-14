@@ -65,6 +65,7 @@
 - Caching strategy is read-through and method-scoped by user.
 - Worker paths now enforce run timeouts and set failure termination reason to `timeout` when exceeded.
 - Analyze lane synthesis now emits timing detail (`llmLaneModelMs`, `similarHintsMs`, `totalMs`) and recommendation runs emit staged timing fields for optimization work.
+- Internal LLM benchmarking is available via `npm run bench:llm` (supports model/effort matrix testing).
 - Recommendation progress UI maps to actual steps:
   - Loading lane context
   - Scanning known listening history

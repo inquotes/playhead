@@ -3,23 +3,25 @@ import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { LogoutButton } from "./logout-button";
-import { DiscoveryListSection } from "./discovery-list-section";
 
-function formatDate(iso: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(iso);
+function formatMonthYearFromUnix(value: number | null): string {
+  if (!value) return "n/a";
+  return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(value * 1000));
 }
 
-function formatRangeLabel(from: number, to: number): string {
-  const fromDate = new Date(from * 1000);
-  const toDate = new Date(to * 1000);
-  const fmt = new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-  return `${fmt.format(fromDate)} - ${fmt.format(toDate)}`;
+function backfillStatusLabel(params: {
+  fullHistoryReadyAt: Date | null;
+  status: string | null;
+  weeksProcessed: number;
+  weeksDiscovered: number;
+}): "Complete" | "Running" | "Incomplete" {
+  if (params.fullHistoryReadyAt || (params.weeksDiscovered > 0 && params.weeksProcessed >= params.weeksDiscovered)) {
+    return "Complete";
+  }
+  if (params.status === "running") {
+    return "Running";
+  }
+  return "Incomplete";
 }
 
 export default async function ProfilePage() {
@@ -29,120 +31,174 @@ export default async function ProfilePage() {
   }
 
   const name = user.displayName ?? user.lastfmUsername;
-  const recentAnalyses = await prisma.analysisRun.findMany({
-    where: {
-      userAccountId: user.id,
-      targetLastfmUsername: user.lastfmUsername,
-    },
-    orderBy: { createdAt: "desc" },
-    take: 10,
-    include: {
-      recommendationRuns: {
+  const [totalHistoryArtists, exploredArtists, weeklyState, savedArtists] = await Promise.all([
+    prisma.userKnownArtistRollup.count({
+      where: { userAccountId: user.id },
+    }),
+    prisma.userKnownArtistRollup.count({
+      where: {
+        userAccountId: user.id,
+        playcount: { gte: 10 },
+      },
+    }),
+    prisma.userWeeklyListeningState.findUnique({
+      where: { userAccountId: user.id },
+      select: {
+        status: true,
+        weeksProcessed: true,
+        weeksDiscovered: true,
+        oldestWeekStart: true,
+        fullHistoryReadyAt: true,
+      },
+    }),
+    prisma.savedArtist.findMany({
+      where: { userAccountId: user.id },
+      select: {
+        normalizedName: true,
+        knownPlaycountAtSave: true,
+      },
+    }),
+  ]);
+
+  const savedArtistCount = savedArtists.length;
+  const savedNames = [...new Set(savedArtists.map((artist) => artist.normalizedName))];
+  const savedArtistRollups = savedNames.length
+    ? await prisma.userKnownArtistRollup.findMany({
         where: {
           userAccountId: user.id,
-          targetLastfmUsername: user.lastfmUsername,
+          normalizedName: { in: savedNames },
         },
-        orderBy: { createdAt: "desc" },
-        take: 3,
-      },
-    },
-  });
+        select: {
+          normalizedName: true,
+          playcount: true,
+        },
+      })
+    : [];
 
-  const savedArtists = await prisma.savedArtist.findMany({
-    where: { userAccountId: user.id },
-    orderBy: { savedAt: "desc" },
-    take: 100,
-    select: {
-      id: true,
-      artistName: true,
-      savedAt: true,
-      savedFromTargetUsername: true,
-    },
+  const currentPlaycountByName = new Map(savedArtistRollups.map((row) => [row.normalizedName, row.playcount]));
+  const progressedSavedArtists = savedArtists.reduce((count, artist) => {
+    const currentPlaycount = currentPlaycountByName.get(artist.normalizedName) ?? 0;
+    if (artist.knownPlaycountAtSave == null) {
+      return currentPlaycount > 0 ? count + 1 : count;
+    }
+
+    return currentPlaycount > artist.knownPlaycountAtSave ? count + 1 : count;
+  }, 0);
+  const exploredSavedArtists = savedArtists.reduce((count, artist) => {
+    const currentPlaycount = currentPlaycountByName.get(artist.normalizedName) ?? 0;
+    return currentPlaycount >= 10 ? count + 1 : count;
+  }, 0);
+
+  const weeksProcessed = weeklyState?.weeksProcessed ?? 0;
+  const weeksDiscovered = weeklyState?.weeksDiscovered ?? 0;
+  const scrobblingSince = formatMonthYearFromUnix(weeklyState?.oldestWeekStart ?? null);
+  const statusLabel = backfillStatusLabel({
+    fullHistoryReadyAt: weeklyState?.fullHistoryReadyAt ?? null,
+    status: weeklyState?.status ?? null,
+    weeksProcessed,
+    weeksDiscovered,
   });
 
   return (
-    <main className="mp-page">
-      <section className="mp-panel mp-panel-narrow">
-        <p className="mp-kicker">PROFILE</p>
-        <h2>{name}</h2>
-        <p className="mp-muted">Last.fm username: {user.lastfmUsername}</p>
-        <div className="mp-actions-row mp-actions-left" style={{ marginTop: "1rem" }}>
-          <LogoutButton />
-          <Link href="/" className="mp-button mp-button-ghost">
-            Back Home
-          </Link>
+    <section>
+      <p className="mp-kicker">PROFILE HOME</p>
+      <h2>{name}</h2>
+      <p className="mp-muted">Last.fm username: {user.lastfmUsername}</p>
+
+      <article className="mp-profile-hero" style={{ marginTop: "1rem" }}>
+        <p className="mp-kicker">PROFILE STATS</p>
+        <h3>Listening + discovery snapshot</h3>
+
+        <div className="mp-profile-stat-flow">
+          <article className="mp-profile-stat-card is-primary">
+            <div className="mp-profile-stat-head">
+              <p className="mp-kicker">EXPLORED ARTISTS</p>
+              <span className="mp-info-wrap">
+                <span className="mp-info-dot" role="img" aria-label="Info">
+                  i
+                </span>
+                <span className="mp-info-tooltip" role="tooltip">
+                  Explored Artists are artists in your listening history with 10 or more total scrobbles.
+                </span>
+              </span>
+            </div>
+            <strong>{exploredArtists}</strong>
+            <p className="mp-profile-subtext">
+              {exploredArtists} of {totalHistoryArtists} Total Artists
+            </p>
+          </article>
+
+          <article className="mp-profile-stat-card">
+            <div className="mp-profile-stat-head">
+              <p className="mp-kicker">DISCOVERY PROGRESS</p>
+              <span className="mp-info-wrap">
+                  <span className="mp-info-dot" role="img" aria-label="Info">
+                    i
+                  </span>
+                  <span className="mp-info-tooltip" role="tooltip">
+                    Progressed means current scrobbles are higher than at save time. Explored means current scrobbles are 10 or more.
+                  </span>
+                </span>
+              </div>
+              <div className="mp-progress-modules">
+                <div className="mp-progress-module">
+                  <p className="mp-profile-mini-label">Progressed</p>
+                  <strong>{progressedSavedArtists}</strong>
+                  <p className="mp-profile-subtext">of {savedArtistCount} saved artists</p>
+                </div>
+                <div className="mp-progress-module">
+                  <p className="mp-profile-mini-label">Explored</p>
+                  <strong>{exploredSavedArtists}</strong>
+                  <p className="mp-profile-subtext">of {savedArtistCount} saved artists</p>
+                </div>
+              </div>
+            </article>
+
+          <article className="mp-profile-stat-card">
+            <div className="mp-profile-stat-head">
+              <p className="mp-kicker">BACKFILL</p>
+              <span className={`mp-status-chip is-${statusLabel.toLowerCase()}`}>{statusLabel}</span>
+            </div>
+            <p className="mp-profile-mini-label">Scrobbling since</p>
+            <strong>{scrobblingSince}</strong>
+            <p className="mp-profile-subtext">
+              {weeksProcessed} / {weeksDiscovered} weeks indexed
+            </p>
+          </article>
         </div>
 
-        <div className="mp-divider" />
+        <div className="mp-profile-subsection">
+          <p className="mp-muted">Listening history stats use your indexed Last.fm history. Discovery progress uses your saved Discovery List only.</p>
+        </div>
+      </article>
 
-        <DiscoveryListSection
-          initialItems={savedArtists.map((artist) => ({
-            id: artist.id,
-            artistName: artist.artistName,
-            savedAt: artist.savedAt.toISOString(),
-            savedFromTargetUsername: artist.savedFromTargetUsername,
-          }))}
-        />
+      <div className="mp-profile-entry-grid" style={{ marginTop: "0.9rem" }}>
+        <article className="mp-profile-card">
+          <p className="mp-kicker">DISCOVERY LIST</p>
+          <strong>Saved artists</strong>
+          <p className="mp-muted">Open your full Discovery List page to manage saved artists.</p>
+          <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.7rem" }}>
+            <Link href="/profile/discovery-list" className="mp-button mp-button-ghost mp-button-compact">
+              Open Discovery List
+            </Link>
+          </div>
+        </article>
 
-        <div className="mp-divider" />
+        <article className="mp-profile-card">
+          <p className="mp-kicker">PAST RECOMMENDATIONS</p>
+          <strong>Analysis history</strong>
+          <p className="mp-muted">Browse past recommendation runs with load more paging.</p>
+          <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.7rem" }}>
+            <Link href="/profile/past-recommendations" className="mp-button mp-button-ghost mp-button-compact">
+              Open Past Recommendations
+            </Link>
+          </div>
+        </article>
+      </div>
 
-        <section>
-          <p className="mp-kicker">RECENT ANALYSES</p>
-          {recentAnalyses.length === 0 ? (
-            <p className="mp-muted">No self-analysis history yet. Run your first analysis from home.</p>
-          ) : (
-            <div className="mp-history-list">
-              {recentAnalyses.map((analysis) => {
-                const payload = analysis.lanesJson as
-                  | { lanes?: Array<{ id?: string; name?: string }> }
-                  | Array<{ id?: string; name?: string }>;
-                const lanes = Array.isArray(payload) ? payload : (Array.isArray(payload?.lanes) ? payload.lanes : []);
-                const laneCount = lanes.length;
-                const laneNameById = new Map(lanes.map((lane) => [String(lane.id ?? ""), lane.name ?? null]));
-                return (
-                  <article key={analysis.id} className="mp-history-card">
-                    <div className="mp-history-head">
-                      <p className="mp-kicker">{formatDate(analysis.createdAt)}</p>
-                      <strong>{formatRangeLabel(analysis.rangeStart, analysis.rangeEnd)}</strong>
-                    </div>
-                    <p className="mp-muted">{laneCount} lanes generated</p>
-                    <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.6rem" }}>
-                      <Link href={`/?analysisRunId=${analysis.id}`} className="mp-button mp-button-ghost mp-button-compact">
-                        Re-Visit Analysis
-                      </Link>
-                    </div>
-
-                    {analysis.recommendationRuns.length > 0 ? (
-                      <div className="mp-history-nested">
-                        <p className="mp-kicker">RECOMMENDATIONS</p>
-                        <ul className="mp-notes">
-                          {analysis.recommendationRuns.map((recommendation) => {
-                            const results = recommendation.resultsJson as { recommendations?: unknown[]; strategyNote?: string };
-                            const recommendationCount = Array.isArray(results?.recommendations) ? results.recommendations.length : 0;
-                            const laneName = laneNameById.get(recommendation.selectedLane) ?? "Saved lane";
-                            return (
-                              <li key={recommendation.id}>
-                                <Link
-                                  href={`/?analysisRunId=${analysis.id}&recommendationRunId=${recommendation.id}`}
-                                  className="mp-auth-link"
-                                >
-                                  {formatDate(recommendation.createdAt)} - {laneName} ({recommendationCount} artists)
-                                </Link>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    ) : (
-                      <p className="mp-muted">No recommendation runs yet.</p>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      </section>
-    </main>
+      <div className="mp-actions-row mp-actions-left" style={{ marginTop: "1.1rem" }}>
+        <LogoutButton />
+      </div>
+    </section>
   );
 }

@@ -1,47 +1,40 @@
 # AI Agent TODOs
 
-## Near-Term Roadmap
+## Current Focus (Next)
 
-1. Lane + recommendation timing optimization
-   - reduce `llmLaneModelMs` (test model choices, temperature, prompt size/shape, and schema pressure)
-   - break out and benchmark deterministic analyze stages beyond current coarse snapshot timing
-   - benchmark recommendation stage timings (candidate expansion, profile enrichment, explanation, album lookup)
-   - compare quality/latency tradeoffs and set target p50/p95 budgets for analyze + recommend
+1. History + app UX polish
+   - smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
+   - add a top-nav entry for Discovery List so it is directly reachable from app flow
+   - improve visual appearance/prominence of the "Analyze a different user" button
+   - tighten empty-state copy and CTAs across no-data/no-recs flows
 
-2. History and UX polish
-      - add pagination/load-more on profile history
-      - smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
-      - redesign profile/navigation IA to support future sections as first-class pages (for example: Profile Stats, Saved Artists, Analysis History)
-      - add a dedicated Listening History page (separate from profile summary)
-      - surface weekly backfill/index status in account UI (for example: recent-year ready, full-history completion progress)
-      - add a top-nav entry for Discovery List so it is directly reachable from app flow
-      - improve visual appearance/prominence of the "Analyze a different user" button
-      - recommendation-card explanation polish when many cards repeat the same "Seeded from ..." artist (for example: enforce seed variety in selection or hide/soften repetitive seed labels)
-      - cluster detail sidebar enhancement: add a collapsible "More artists in this cluster" list so seed context feels connected to visible cluster members
-      - tighten empty-state copy and CTAs across no-data/no-recs flows
+2. Profile stats follow-up (v1 shipped)
+   - add clearer backfill remediation UX when status is `Incomplete`
+   - optionally add per-artist discovery progress signals in Discovery List (last heard, recent scrobbles)
 
-3. Data and API cleanup
-     - remove stale legacy Last.fm username-connect endpoints after full cutover validation
-     - remove remaining MCP-era remnants in code/docs/config
-     - align docs with current account-first auth and history behavior
+3. Latency follow-up
+   - set long-term latency budgets after more production-like usage
 
-4. Deploy readiness (Cloudflare-first)
-     - implement `ai-agent/cloudflare-deploy-readiness-plan.md` in phased order
-     - prioritize Phase 1-4 as the minimum production baseline
+## Data + API Cleanup (Later)
+
+- remove stale legacy Last.fm username-connect endpoints after full cutover validation
+- remove remaining MCP-era remnants in code/docs/config
+- align docs with current account-first auth and history behavior
+
+## Deploy Readiness (Cloudflare-first)
+
+- implement `ai-agent/cloudflare-deploy-readiness-plan.md` in phased order
+- prioritize Phase 1-4 as the minimum production baseline
 
 ## Backlog Ideas
 
-- Outbound links expansion on recommendation cards
-  - Apple Music and Spotify links when mapping confidence is high
-- Discovery Progress for saved artists
-  - report when a saved artist is scrobbled again (first seen after save + latest listen)
-  - show lightweight per-artist progress signals (recent scrobble count window, last heard timestamp)
-  - optionally surface a "rediscovered" state when an artist reappears after inactivity
-- Preference controls for recommendation filtering
-  - "I dislike this artist" action and persistent blocklist for future recommendation exclusion
-  - "Artists I love" list to positively weight future recommendations
-  - explore optional Last.fm "Love" write-back integration for compatible actions
-- Expanded listening profile reports
+- outbound links expansion on recommendation cards (Apple Music / Spotify when mapping confidence is high)
+- standalone artist pages in-app (instead of routing to Last.fm), including artist-specific recommendation flows to find new recommendations from one selected artist
+- preference controls for recommendation filtering
+  - "I dislike this artist" + persistent blocklist
+  - "Artists I love" positive weighting
+  - optional Last.fm Love write-back integration
+- expanded listening profile reports
 
 ## Reference
 

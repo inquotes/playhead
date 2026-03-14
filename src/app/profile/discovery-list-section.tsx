@@ -6,7 +6,11 @@ type DiscoveryListItem = {
   id: string;
   artistName: string;
   savedAt: string;
-  savedFromTargetUsername: string | null;
+  recommendationContext: {
+    blurb?: string;
+    recommendedAlbum?: string | null;
+    chips?: string[];
+  } | null;
 };
 
 type DiscoveryListSectionProps = {
@@ -60,9 +64,42 @@ export function DiscoveryListSection({ initialItems }: DiscoveryListSectionProps
           {sortedItems.map((item) => (
             <article key={item.id} className="mp-history-card">
               <div className="mp-history-head">
-                <strong>{item.artistName}</strong>
-                <p className="mp-muted">Saved {formatDate(item.savedAt)}</p>
-                {item.savedFromTargetUsername && <p className="mp-muted">Source profile: {item.savedFromTargetUsername}</p>}
+                <strong>
+                  <a
+                    className="mp-lastfm-link"
+                    href={`https://www.last.fm/music/${encodeURIComponent(item.artistName)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {item.artistName}
+                  </a>
+                </strong>
+                {item.recommendationContext?.blurb && <p className="mp-muted">{item.recommendationContext.blurb}</p>}
+                {item.recommendationContext?.recommendedAlbum && (
+                  <p className="mp-muted mp-saved-meta-line">
+                    Start with album:{" "}
+                    <a
+                      className="mp-lastfm-link"
+                      href={`https://www.last.fm/music/${encodeURIComponent(item.artistName)}/${encodeURIComponent(item.recommendationContext.recommendedAlbum)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {item.recommendationContext.recommendedAlbum}
+                    </a>
+                  </p>
+                )}
+                {Array.isArray(item.recommendationContext?.chips) && item.recommendationContext.chips.length > 0 && (
+                  <div className="mp-saved-chip-row">
+                    <p className="mp-kicker">RECOMMENDATION BASED ON</p>
+                    <div className="mp-tag-wrap">
+                      {item.recommendationContext.chips.slice(0, 3).map((chip) => (
+                        <span key={`${item.id}-${chip.toLowerCase()}`} className="mp-tag">
+                          {chip}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="mp-actions-row mp-actions-left" style={{ marginTop: "0.6rem" }}>
                 <button
@@ -72,6 +109,7 @@ export function DiscoveryListSection({ initialItems }: DiscoveryListSectionProps
                 >
                   {removingId === item.id ? "Removing..." : "Remove"}
                 </button>
+                <p className="mp-muted mp-saved-date">Saved {formatDate(item.savedAt)}</p>
               </div>
             </article>
           ))}
