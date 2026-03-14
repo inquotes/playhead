@@ -82,9 +82,14 @@ async function upsertState(userAccountId: string, username: string): Promise<voi
 
 async function enqueueJob(params: { userAccountId: string; username: string; priority?: number }): Promise<void> {
   await upsertState(params.userAccountId, params.username);
-  const state = await prisma.userWeeklyListeningState.findUnique({
+
+  await prisma.userWeeklyListeningState.update({
     where: { userAccountId: params.userAccountId },
-    select: { fullHistoryReadyAt: true },
+    data: {
+      status: "idle",
+      recentYearReadyAt: null,
+      fullHistoryReadyAt: null,
+    },
   });
 
   await prisma.userWeeklyBackfillJob.upsert({
@@ -92,13 +97,13 @@ async function enqueueJob(params: { userAccountId: string; username: string; pri
     create: {
       userAccountId: params.userAccountId,
       lastfmUsername: params.username,
-      status: state?.fullHistoryReadyAt ? "complete" : "queued",
+      status: "queued",
       priority: params.priority ?? 100,
       nextRunAt: new Date(),
     },
     update: {
       lastfmUsername: params.username,
-      status: state?.fullHistoryReadyAt ? "complete" : "queued",
+      status: "queued",
       priority: params.priority ?? 100,
       nextRunAt: new Date(),
       lastErrorCode: null,
@@ -732,4 +737,23 @@ export async function getAggregatedWeeklyArtistsFromStore(params: {
   }
 
   return [...byArtist.values()].sort((a, b) => b.playcount - a.playcount);
+}
+
+export async function getLatestCompletedWeekEndFromStore(params: {
+  userAccountId: string;
+}): Promise<number | null> {
+  const latest = await prisma.userWeeklyIngestedWeek.findFirst({
+    where: {
+      userAccountId: params.userAccountId,
+      status: "done",
+    },
+    orderBy: {
+      weekEnd: "desc",
+    },
+    select: {
+      weekEnd: true,
+    },
+  });
+
+  return latest?.weekEnd ?? null;
 }

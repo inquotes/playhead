@@ -12,6 +12,7 @@
 - Analyze step builds a `ListeningSnapshot`; if no in-window listening is found, it persists an empty-lane analysis with explicit no-history summary.
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
 - Authenticated self-target runs now warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) before falling back to direct weekly API aggregation.
+- Weekly history indexing is job-backed (`UserWeeklyBackfillJob`) with primary dispatch progression and watchdog rescue for stale/retry states.
 - Each lane includes compact `LaneContext` data: representative/member artists, tags, and bounded `similarHints` for warm-start recommendation expansion.
 - Recommend step reuses lane context from `AnalysisRun` and does not rebuild the full listening snapshot.
 - Recommend step fetches broad known history (library-first, cached), filters with the rule: exclude artists with `>= 10` known plays, allow `< 10`.
@@ -63,6 +64,7 @@
 - Analyze is heavier; recommend is intentionally lighter and should not repeat snapshot construction.
 - Caching strategy is read-through and method-scoped by user.
 - Worker paths now enforce run timeouts and set failure termination reason to `timeout` when exceeded.
+- Analyze lane synthesis now emits timing detail (`llmLaneModelMs`, `similarHintsMs`, `totalMs`) and recommendation runs emit staged timing fields for optimization work.
 - Recommendation progress UI maps to actual steps:
   - Loading lane context
   - Scanning known listening history

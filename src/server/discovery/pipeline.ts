@@ -1,6 +1,6 @@
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
-import { getOpenAIClient, getOpenAIModel } from "@/server/ai/client";
+import { getOpenAIClient, getOpenAIModel, getOpenAIReasoningEffort } from "@/server/ai/client";
 import { classifyLanes } from "@/server/discovery/classifier";
 import type {
   ArtistProfile,
@@ -17,8 +17,10 @@ import type {
 import {
   getAggregatedWeeklyArtists,
   getArtistProfile,
+  getLatestWeeklyChartBoundary,
   getArtistTopAlbumSuggestion,
   getKnownArtists,
+  getRecentArtistCounts,
   getSimilarArtistProfiles,
   getTopTrackSummary,
 } from "@/server/lastfm/service";
@@ -27,17 +29,17 @@ const MAX_SNAPSHOT_ARTISTS = 32;
 const MAX_PROFILED_ARTISTS = 24;
 
 const laneModelSchema = z.object({
-  summary: z.string().min(1),
-  notablePatterns: z.array(z.string().min(1)).min(2).max(6),
+  summary: z.string().min(1).max(220),
+  notablePatterns: z.array(z.string().min(1).max(140)).min(2).max(6),
   lanes: z
     .array(
       z.object({
-        label: z.string().min(1),
-        description: z.string().min(1),
-        representativeArtists: z.array(z.string().min(1)).min(2).max(8),
-        memberArtists: z.array(z.string().min(1)).min(3).max(15),
+        label: z.string().min(1).max(48),
+        description: z.string().min(1).max(180),
+        representativeArtists: z.array(z.string().min(1).max(80)).min(2).max(8),
+        memberArtists: z.array(z.string().min(1).max(80)).min(3).max(15),
         confidence: z.number().min(0).max(1),
-        reasoning: z.string().min(1),
+        reasoning: z.string().min(1).max(180),
       }),
     )
     .min(3)
@@ -45,7 +47,7 @@ const laneModelSchema = z.object({
 });
 
 const explanationSchema = z.object({
-  explanations: z.array(z.object({ artist: z.string().min(1), blurb: z.string().min(1) })).min(1).max(8),
+  explanations: z.array(z.object({ artist: z.string().min(1).max(80), blurb: z.string().min(1).max(220) })).min(1).max(8),
 });
 
 function normalizeArtist(value: string): string {
@@ -240,8 +242,9 @@ export async function buildListeningSnapshot(params: {
   timeWindow: TimeWindow;
   weeklyArtistsOverride?: Array<{ artistName: string; normalizedName: string; playcount: number }>;
   knownArtistsOverride?: Array<{ artistName: string; normalizedName: string; playcount: number }>;
+  includeRecentTail?: boolean;
 }): Promise<ListeningSnapshot> {
-  const [weeklyArtists, knownArtists, topTracks] = await Promise.all([
+  const [initialWeeklyArtists, initialKnownArtists, topTracks] = await Promise.all([
     params.weeklyArtistsOverride ??
       getAggregatedWeeklyArtists({
         username: params.username,
@@ -251,6 +254,46 @@ export async function buildListeningSnapshot(params: {
     params.knownArtistsOverride ?? getKnownArtists({ username: params.username }),
     getTopTrackSummary(params.username),
   ]);
+  let weeklyArtists = initialWeeklyArtists;
+  let knownArtists = initialKnownArtists;
+
+  if (params.includeRecentTail !== false) {
+    const effectiveEnd = Math.min(params.timeWindow.to, Math.floor(Date.now() / 1000));
+    const latestWeeklyBoundary = await getLatestWeeklyChartBoundary({ username: params.username });
+    const tailFrom = latestWeeklyBoundary ? Math.max(params.timeWindow.from, latestWeeklyBoundary + 1) : params.timeWindow.from;
+    if (effectiveEnd >= tailFrom) {
+      const recentTail = await getRecentArtistCounts({
+        username: params.username,
+        from: tailFrom,
+        to: effectiveEnd,
+      });
+      if (recentTail.length > 0) {
+        const byArtist = new Map(weeklyArtists.map((row) => [row.normalizedName, { ...row }]));
+        for (const row of recentTail) {
+          const existing = byArtist.get(row.normalizedName);
+          if (existing) {
+            existing.playcount += row.playcount;
+          } else {
+            byArtist.set(row.normalizedName, { ...row });
+          }
+        }
+        weeklyArtists = [...byArtist.values()].sort((a, b) => b.playcount - a.playcount);
+      }
+
+      if (!params.knownArtistsOverride && recentTail.length > 0) {
+        const knownByArtist = new Map(knownArtists.map((row) => [row.normalizedName, { ...row }]));
+        for (const row of recentTail) {
+          const existing = knownByArtist.get(row.normalizedName);
+          if (existing) {
+            existing.playcount += row.playcount;
+          } else {
+            knownByArtist.set(row.normalizedName, { ...row });
+          }
+        }
+        knownArtists = [...knownByArtist.values()].sort((a, b) => b.playcount - a.playcount);
+      }
+    }
+  }
 
   const topArtists = weeklyArtists.slice(0, MAX_SNAPSHOT_ARTISTS).map((row) => ({
     artistName: row.artistName,
@@ -351,47 +394,74 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
     similarHintsMs: number;
     totalMs: number;
     usedFallback: boolean;
+    llmLaneModel: {
+      promptBuildMs: number;
+      llmRequestMs: number;
+      parseValidateMs: number;
+      llmTotalMs: number;
+      model: string;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      totalTokens: number | null;
+    };
   };
 }> {
   const totalStart = Date.now();
-  const artistInput = snapshot.artistProfiles.slice(0, 24).map((profile) => ({
-    artist: profile.artistName,
-    plays: profile.periodPlaycount,
-    allTimePlaycount: profile.allTimePlaycount,
-    tags: profile.tags.slice(0, 4),
-    similarHints: profile.similarArtists.slice(0, 2),
-  }));
-
   const client = getOpenAIClient();
+  const model = getOpenAIModel();
+  const reasoningEffort = getOpenAIReasoningEffort();
+  let promptBuildMs = 0;
+  let llmRequestMs = 0;
+  let parseValidateMs = 0;
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+  let totalTokens: number | null = null;
 
   try {
+    const promptBuildStart = Date.now();
+    const artistInput = snapshot.artistProfiles.slice(0, 24).map((profile) => ({
+      artist: profile.artistName,
+      plays: profile.periodPlaycount,
+      allTimePlaycount: profile.allTimePlaycount,
+      tags: profile.tags.slice(0, 4),
+      similarHints: profile.similarArtists.slice(0, 2),
+    }));
+
+    const userPayload = JSON.stringify({
+      username: snapshot.username,
+      sourceWindow: snapshot.timeWindow.label,
+      summary: snapshot.summary,
+      artists: artistInput,
+    });
+    promptBuildMs = Date.now() - promptBuildStart;
+
     const llmStart = Date.now();
     const completion = await client.chat.completions.parse({
-      model: getOpenAIModel(),
+      model,
+      reasoning_effort: reasoningEffort,
       messages: [
         {
           role: "system",
           content:
-            "You are a music taste analyst. Group artists into exactly 3 practical discovery lanes using only supplied evidence. Use vivid, listener-friendly language with musical texture and mood. Avoid technical framing. Do not mention internal limitations or terms such as metadata quality, sparse data, deterministic logic, model behavior, schemas, or parsing.",
+            "You are a music taste analyst. Group artists into exactly 3 practical discovery lanes using only supplied evidence. Use vivid, listener-friendly language with musical texture and mood. Keep output concise: summary <= 220 chars, each notable pattern <= 140 chars, lane label <= 48 chars, lane description <= 180 chars, lane reasoning <= 180 chars. Avoid technical framing. Do not mention internal limitations or terms such as metadata quality, sparse data, deterministic logic, model behavior, schemas, or parsing.",
         },
         {
           role: "user",
-          content: JSON.stringify({
-            username: snapshot.username,
-            sourceWindow: snapshot.timeWindow.label,
-            summary: snapshot.summary,
-            artists: artistInput,
-          }),
+          content: userPayload,
         },
       ],
       response_format: zodResponseFormat(laneModelSchema, "taste_lanes"),
     });
+    llmRequestMs = Date.now() - llmStart;
+    inputTokens = completion.usage?.prompt_tokens ?? null;
+    outputTokens = completion.usage?.completion_tokens ?? null;
+    totalTokens = completion.usage?.total_tokens ?? null;
 
+    const parseStart = Date.now();
     const parsed = completion.choices[0]?.message?.parsed;
     if (!parsed) {
       throw new Error("Lane model did not return parseable output.");
     }
-    const llmLaneModelMs = Date.now() - llmStart;
 
     const periodPlayMap = new Map(snapshot.topArtists.map((artist) => [artist.normalizedName, artist.periodPlaycount]));
     const normalizedArtistMap = new Map(snapshot.topArtists.map((artist) => [artist.normalizedName, artist.artistName]));
@@ -448,6 +518,8 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         },
       };
     });
+    parseValidateMs = Date.now() - parseStart;
+    const llmLaneModelMs = promptBuildMs + llmRequestMs + parseValidateMs;
 
     const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
@@ -465,10 +537,20 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         similarHintsMs,
         totalMs: Date.now() - totalStart,
         usedFallback: false,
+        llmLaneModel: {
+          promptBuildMs,
+          llmRequestMs,
+          parseValidateMs,
+          llmTotalMs: llmLaneModelMs,
+          model,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+        },
       },
     };
   } catch {
-    const llmLaneModelMs = Date.now() - totalStart;
+    const llmLaneModelMs = promptBuildMs + llmRequestMs + parseValidateMs;
     const fallback = buildFallbackLanes(snapshot);
     const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
@@ -486,6 +568,16 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
         similarHintsMs,
         totalMs: Date.now() - totalStart,
         usedFallback: true,
+        llmLaneModel: {
+          promptBuildMs,
+          llmRequestMs,
+          parseValidateMs,
+          llmTotalMs: llmLaneModelMs,
+          model,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+        },
       },
     };
   }
@@ -536,39 +628,74 @@ async function generateRecommendationExplanations(params: {
     bioSnippet: string;
     supportingSeedArtists: string[];
   }>;
-}): Promise<Map<string, string>> {
+}): Promise<{
+  explanations: Map<string, string>;
+  timing: {
+    promptBuildMs: number;
+    llmRequestMs: number;
+    parseValidateMs: number;
+    llmTotalMs: number;
+    model: string;
+    candidateCount: number;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+    usedFallback: boolean;
+  };
+}> {
   const client = getOpenAIClient();
+  const model = getOpenAIModel();
+  const reasoningEffort = getOpenAIReasoningEffort();
+  let promptBuildMs = 0;
+  let llmRequestMs = 0;
+  let parseValidateMs = 0;
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+  let totalTokens: number | null = null;
 
   try {
+    const promptBuildStart = Date.now();
+    const candidatesPayload = params.candidates.map((candidate) => ({
+      artist: candidate.artist,
+      matchSource: candidate.matchSource,
+      tags: candidate.tags,
+      bioSnippet: candidate.bioSnippet,
+      supportingSeedArtists: candidate.supportingSeedArtists.slice(0, 2),
+    }));
+
+    const userPayload = JSON.stringify({
+      lane: {
+        label: params.laneContext.label,
+        description: params.laneContext.description,
+        tags: params.laneContext.tags,
+      },
+      candidates: candidatesPayload,
+    });
+    promptBuildMs = Date.now() - promptBuildStart;
+
+    const llmStart = Date.now();
     const completion = await client.chat.completions.parse({
-      model: getOpenAIModel(),
+      model,
+      reasoning_effort: reasoningEffort,
       messages: [
         {
           role: "system",
           content:
-            "You are a playlist editor writing short artist blurbs. Write 1-2 sentences that feel human, specific, and musical. Describe the artist's sound and mood first, then optionally connect to the lane. Never mention internal ranking logic, algorithms, similarity scores, seeds, novelty, pipelines, metadata, LLMs, or system mechanics. Use only supplied facts; do not invent albums, tracks, or biography details.",
+            "You are a playlist editor writing short artist blurbs. Write 1-2 sentences that feel human, specific, and musical. Keep each blurb <= 220 characters. Describe the artist's sound and mood first, then optionally connect to the lane. Never mention internal ranking logic, algorithms, similarity scores, seeds, novelty, pipelines, metadata, LLMs, or system mechanics. Use only supplied facts; do not invent albums, tracks, or biography details.",
         },
         {
           role: "user",
-          content: JSON.stringify({
-            lane: {
-              label: params.laneContext.label,
-              description: params.laneContext.description,
-              tags: params.laneContext.tags,
-            },
-            candidates: params.candidates.map((candidate) => ({
-              artist: candidate.artist,
-              matchSource: candidate.matchSource,
-              tags: candidate.tags,
-              bioSnippet: candidate.bioSnippet,
-              supportingSeedArtists: candidate.supportingSeedArtists.slice(0, 2),
-            })),
-          }),
+          content: userPayload,
         },
       ],
       response_format: zodResponseFormat(explanationSchema, "recommendation_explanations"),
     });
+    llmRequestMs = Date.now() - llmStart;
+    inputTokens = completion.usage?.prompt_tokens ?? null;
+    outputTokens = completion.usage?.completion_tokens ?? null;
+    totalTokens = completion.usage?.total_tokens ?? null;
 
+    const parseStart = Date.now();
     const parsed = completion.choices[0]?.message?.parsed;
     if (!parsed) {
       throw new Error("Explanation output missing.");
@@ -578,9 +705,38 @@ async function generateRecommendationExplanations(params: {
     for (const item of parsed.explanations) {
       map.set(normalizeArtist(item.artist), item.blurb.trim());
     }
-    return map;
+    parseValidateMs = Date.now() - parseStart;
+    return {
+      explanations: map,
+      timing: {
+        promptBuildMs,
+        llmRequestMs,
+        parseValidateMs,
+        llmTotalMs: promptBuildMs + llmRequestMs + parseValidateMs,
+        model,
+        candidateCount: params.candidates.length,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        usedFallback: false,
+      },
+    };
   } catch {
-    return new Map();
+    return {
+      explanations: new Map(),
+      timing: {
+        promptBuildMs,
+        llmRequestMs,
+        parseValidateMs,
+        llmTotalMs: promptBuildMs + llmRequestMs + parseValidateMs,
+        model,
+        candidateCount: params.candidates.length,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        usedFallback: true,
+      },
+    };
   }
 }
 
@@ -779,7 +935,7 @@ export async function generateDeterministicRecommendations(params: {
   }
 
   const explanationStart = Date.now();
-  const explanationMap = await generateRecommendationExplanations({
+  const explanationResult = await generateRecommendationExplanations({
     laneContext: params.laneContext,
     candidates: selected.map((candidate) => ({
       artist: candidate.artistName,
@@ -789,6 +945,7 @@ export async function generateDeterministicRecommendations(params: {
       supportingSeedArtists: candidate.supportingSeedArtists,
     })),
   });
+  const explanationMap = explanationResult.explanations;
   const explanationMs = Date.now() - explanationStart;
 
   const albumLookupStart = Date.now();
@@ -822,6 +979,7 @@ export async function generateDeterministicRecommendations(params: {
       profileEnrichmentMs,
       rankingMs,
       explanationMs,
+      llmExplanation: explanationResult.timing,
       albumLookupMs,
       totalMs: Date.now() - totalStart,
     },

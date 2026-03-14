@@ -104,6 +104,18 @@ export type RecommendationResult = {
     explanationMs: number;
     albumLookupMs: number;
     totalMs: number;
+    llmExplanation?: {
+      promptBuildMs: number;
+      llmRequestMs: number;
+      parseValidateMs: number;
+      llmTotalMs: number;
+      model: string;
+      candidateCount: number;
+      inputTokens: number | null;
+      outputTokens: number | null;
+      totalTokens: number | null;
+      usedFallback: boolean;
+    };
   };
 };
 

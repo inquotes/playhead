@@ -299,6 +299,26 @@ export async function getAggregatedWeeklyArtists(params: {
   );
 }
 
+export async function getLatestWeeklyChartBoundary(params: {
+  username: string;
+}): Promise<number | null> {
+  const username = params.username.trim();
+  const scope = username.toLowerCase();
+
+  const chartListRaw = await readThroughCache(
+    {
+      scope,
+      method: "user.getWeeklyChartList",
+      params: { user: username },
+      ttlSeconds: 60 * 30,
+    },
+    () => getWeeklyChartList({ user: username }),
+  );
+
+  const weeks = parseWeeklyChartList(chartListRaw);
+  return weeks[0]?.to ?? null;
+}
+
 export async function getArtistProfile(params: {
   artistName: string;
   username: string;
@@ -431,6 +451,88 @@ export async function getTopTrackSummary(username: string): Promise<Array<{ arti
           return { artist, track, playcount };
         })
         .filter((item): item is { artist: string; track: string; playcount: number } => Boolean(item));
+    },
+  );
+}
+
+export async function getRecentArtistCounts(params: {
+  username: string;
+  from: number;
+  to: number;
+}): Promise<Array<{ artistName: string; normalizedName: string; playcount: number }>> {
+  const username = params.username.trim();
+  const scope = username.toLowerCase();
+  const from = Math.floor(params.from);
+  const to = Math.floor(params.to);
+
+  if (!username || from >= to) {
+    return [];
+  }
+
+  return readThroughCache(
+    {
+      scope,
+      method: "user.recentArtistAggregate",
+      params: { user: username, from, to },
+      ttlSeconds: 60 * 10,
+    },
+    async () => {
+      const byArtist = new Map<string, { artistName: string; normalizedName: string; playcount: number }>();
+      const maxPagesToRead = 100;
+      let page = 1;
+      let totalPages = 1;
+
+      while (page <= totalPages && page <= maxPagesToRead) {
+        const response = await getRecentTracks({
+          user: username,
+          from,
+          to,
+          limit: 200,
+          page,
+          extended: 0,
+        });
+        const recenttracksNode = response.recenttracks as
+          | {
+              track?: unknown[];
+              "@attr"?: { totalPages?: unknown };
+            }
+          | undefined;
+
+        const tracks = Array.isArray(recenttracksNode?.track) ? recenttracksNode.track : [];
+        const parsedTotalPages = toNumber(recenttracksNode?.["@attr"]?.totalPages);
+        if (parsedTotalPages && parsedTotalPages > 0) {
+          totalPages = Math.floor(parsedTotalPages);
+        }
+
+        if (tracks.length === 0) {
+          break;
+        }
+
+        for (const track of tracks) {
+          const artistNode = (track as { artist?: unknown }).artist;
+          const artistName =
+            typeof artistNode === "string"
+              ? readString(artistNode)
+              : readString((artistNode as { "#text"?: unknown } | undefined)?.["#text"]);
+          if (!artistName) continue;
+
+          const normalizedName = normalizeArtistName(artistName);
+          const existing = byArtist.get(normalizedName);
+          if (existing) {
+            existing.playcount += 1;
+          } else {
+            byArtist.set(normalizedName, {
+              artistName,
+              normalizedName,
+              playcount: 1,
+            });
+          }
+        }
+
+        page += 1;
+      }
+
+      return [...byArtist.values()].sort((a, b) => b.playcount - a.playcount);
     },
   );
 }

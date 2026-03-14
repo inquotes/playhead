@@ -14,9 +14,27 @@ import {
   ensureRecentYearHistory,
   ensureWeeklyHistoryInBackground,
   getAggregatedWeeklyArtistsFromStore,
+  getLatestCompletedWeekEndFromStore,
   getKnownArtistsFromWeeklyRollup,
   isRangeWithinRecentYear,
 } from "@/server/lastfm/weekly-history";
+import { getRecentArtistCounts } from "@/server/lastfm/service";
+
+function mergeArtistPlaycounts(
+  base: Array<{ artistName: string; normalizedName: string; playcount: number }>,
+  delta: Array<{ artistName: string; normalizedName: string; playcount: number }>,
+): Array<{ artistName: string; normalizedName: string; playcount: number }> {
+  const merged = new Map(base.map((row) => [row.normalizedName, { ...row }]));
+  for (const row of delta) {
+    const existing = merged.get(row.normalizedName);
+    if (existing) {
+      existing.playcount += row.playcount;
+    } else {
+      merged.set(row.normalizedName, { ...row });
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.playcount - a.playcount);
+}
 
 type RunEventAppender = (event: {
   type: string;
@@ -154,12 +172,40 @@ export async function launchAnalyzeRun(params: {
       });
       knownArtistsOverride = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
 
+      const latestCompletedWeekEnd = await getLatestCompletedWeekEndFromStore({ userAccountId: params.userAccountId });
+      const effectiveEnd = Math.min(range.to, Math.floor(Date.now() / 1000));
+      const tailFrom = latestCompletedWeekEnd ? Math.max(range.from, latestCompletedWeekEnd + 1) : range.from;
+
+      if (effectiveEnd >= tailFrom) {
+        const recentTail = await getRecentArtistCounts({
+          username: params.username,
+          from: tailFrom,
+          to: effectiveEnd,
+        });
+        if (recentTail.length > 0) {
+          knownArtistsOverride = mergeArtistPlaycounts(knownArtistsOverride, recentTail);
+        }
+      }
+
       if (coverage.coverage === "full_recent_year" && isRangeWithinRecentYear(range.from, range.to)) {
         weeklyArtistsOverride = await getAggregatedWeeklyArtistsFromStore({
           userAccountId: params.userAccountId,
           from: range.from,
           to: range.to,
         });
+
+        const effectiveEnd = Math.min(range.to, Math.floor(Date.now() / 1000));
+        const tailFrom = latestCompletedWeekEnd ? Math.max(range.from, latestCompletedWeekEnd + 1) : range.from;
+        if (effectiveEnd >= tailFrom) {
+          const recentTail = await getRecentArtistCounts({
+            username: params.username,
+            from: tailFrom,
+            to: effectiveEnd,
+          });
+          if (recentTail.length > 0) {
+            weeklyArtistsOverride = mergeArtistPlaycounts(weeklyArtistsOverride, recentTail);
+          }
+        }
       }
     }
 
@@ -174,6 +220,7 @@ export async function launchAnalyzeRun(params: {
         },
         weeklyArtistsOverride,
         knownArtistsOverride,
+        includeRecentTail: !weeklyArtistsOverride,
       }),
       timeoutMs,
       "Analyze snapshot build",
@@ -424,6 +471,20 @@ export async function launchRecommendRun(params: {
       });
       knownHistoryCoverage = coverage.coverage;
       knownArtists = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
+
+      const latestCompletedWeekEnd = await getLatestCompletedWeekEndFromStore({ userAccountId: params.userAccountId });
+      const nowSec = Math.floor(Date.now() / 1000);
+      const tailFrom = latestCompletedWeekEnd ? latestCompletedWeekEnd + 1 : nowSec - 14 * 24 * 60 * 60;
+      if (nowSec >= tailFrom) {
+        const recentTail = await getRecentArtistCounts({
+          username: targetUsername,
+          from: tailFrom,
+          to: nowSec,
+        });
+        if (recentTail.length > 0) {
+          knownArtists = mergeArtistPlaycounts(knownArtists, recentTail);
+        }
+      }
     } else {
       knownArtists = await getKnownArtists({ username: targetUsername });
     }
