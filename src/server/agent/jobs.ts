@@ -9,7 +9,7 @@ import {
   synthesizeTasteLanes,
 } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
-import { getKnownArtists } from "@/server/lastfm/service";
+import { getKnownArtists, getKnownArtistsLite } from "@/server/lastfm/service";
 import {
   ensureRecentYearHistory,
   ensureWeeklyHistoryInBackground,
@@ -37,6 +37,11 @@ function mergeArtistPlaycounts(
     }
   }
   return [...merged.values()].sort((a, b) => b.playcount - a.playcount);
+}
+
+function isCloudflareSubrequestLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /too many subrequests/i.test(message);
 }
 
 type RunEventAppender = (event: {
@@ -625,7 +630,15 @@ export async function launchRecommendRun(params: {
         knownArtists = mergeArtistPlaycounts(knownArtists, recentTail);
       }
     } else {
-      knownArtists = await getKnownArtists({ username: targetUsername });
+      try {
+        knownArtists = await getKnownArtists({ username: targetUsername });
+      } catch (error) {
+        if (!isCloudflareSubrequestLimitError(error)) {
+          throw error;
+        }
+        knownHistoryCoverage = "partial";
+        knownArtists = await getKnownArtistsLite({ username: targetUsername, limit: 300 });
+      }
     }
 
     await appendRunEvent({

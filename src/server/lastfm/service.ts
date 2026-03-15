@@ -47,6 +47,8 @@ type ParsedTopAlbum = {
   playcount: number;
 };
 
+type LastfmPeriodPreset = "7d" | "1m" | "6m" | "1y";
+
 function normalizeArtistName(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -204,6 +206,37 @@ function parseTopAlbumsPayload(payload: unknown): ParsedTopAlbum[] {
       return { albumName, playcount };
     })
     .filter((item): item is ParsedTopAlbum => Boolean(item));
+}
+
+function parseTopArtistsPayload(payload: unknown): Array<{ artistName: string; normalizedName: string; playcount: number }> {
+  const artists =
+    payload && typeof payload === "object" ? ((payload as { topartists?: { artist?: unknown[] } }).topartists?.artist ?? []) : [];
+
+  return (Array.isArray(artists) ? artists : [])
+    .map((item) => {
+      const artistName = readString((item as { name?: unknown }).name);
+      const playcount = toNumber((item as { playcount?: unknown }).playcount) ?? 0;
+      if (!artistName) return null;
+      return {
+        artistName,
+        normalizedName: normalizeArtistName(artistName),
+        playcount,
+      };
+    })
+    .filter((item): item is { artistName: string; normalizedName: string; playcount: number } => Boolean(item));
+}
+
+function toLastfmPeriod(preset: LastfmPeriodPreset): "7day" | "1month" | "6month" | "12month" {
+  switch (preset) {
+    case "7d":
+      return "7day";
+    case "1m":
+      return "1month";
+    case "6m":
+      return "6month";
+    case "1y":
+      return "12month";
+  }
 }
 
 function parseLibraryArtists(payload: unknown): Array<{ artistName: string; normalizedName: string; playcount: number }> {
@@ -426,6 +459,52 @@ export async function getKnownArtists(params: { username: string }): Promise<Arr
   );
 
   return library;
+}
+
+export async function getKnownArtistsLite(params: {
+  username: string;
+  limit?: number;
+}): Promise<Array<{ artistName: string; normalizedName: string; playcount: number }>> {
+  const username = params.username.trim();
+  const scope = username.toLowerCase();
+  const limit = Math.max(50, Math.min(500, params.limit ?? 300));
+
+  return readThroughCache(
+    {
+      scope,
+      method: "user.knownArtistsLite",
+      params: { user: username, limit },
+      ttlSeconds: 60 * 60,
+    },
+    async () => {
+      const response = await getTopArtists({ user: username, period: "overall", limit });
+      return parseTopArtistsPayload(response);
+    },
+  );
+}
+
+export async function getTopArtistsForPreset(params: {
+  username: string;
+  preset: LastfmPeriodPreset;
+  limit?: number;
+}): Promise<WeeklyWindowArtist[]> {
+  const username = params.username.trim();
+  const scope = username.toLowerCase();
+  const limit = Math.max(30, Math.min(500, params.limit ?? 120));
+  const period = toLastfmPeriod(params.preset);
+
+  return readThroughCache(
+    {
+      scope,
+      method: "user.topArtistsPreset",
+      params: { user: username, preset: params.preset, period, limit },
+      ttlSeconds: 60 * 30,
+    },
+    async () => {
+      const response = await getTopArtists({ user: username, period, limit });
+      return parseTopArtistsPayload(response);
+    },
+  );
 }
 
 export async function getTopTrackSummary(username: string): Promise<Array<{ artist: string; track: string; playcount: number }>> {

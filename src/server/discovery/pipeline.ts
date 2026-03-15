@@ -19,14 +19,16 @@ import {
   getArtistProfile,
   getLatestWeeklyChartBoundary,
   getArtistTopAlbumSuggestion,
-  getKnownArtists,
+  getKnownArtistsLite,
   getRecentArtistCounts,
   getSimilarArtistProfiles,
+  getTopArtistsForPreset,
   getTopTrackSummary,
 } from "@/server/lastfm/service";
 
 const MAX_SNAPSHOT_ARTISTS = 32;
-const MAX_PROFILED_ARTISTS = 24;
+const MAX_PROFILED_ARTISTS = 8;
+const ENABLE_LANE_SIMILAR_HINTS = process.env.ENABLE_LANE_SIMILAR_HINTS === "1";
 
 const laneModelSchema = z.object({
   summary: z.string().min(1).max(220),
@@ -260,6 +262,15 @@ export function laneToContext(lane: Lane): LaneContext {
 }
 
 async function attachSimilarHintsToLanes(params: { username: string; lanes: Lane[] }): Promise<Lane[]> {
+  if (!ENABLE_LANE_SIMILAR_HINTS) {
+    return params.lanes.map((lane) => ({
+      ...lane,
+      artists: uniqueNormalizedArtists(lane.artists),
+      memberArtists: uniqueNormalizedArtists(lane.memberArtists ?? lane.artists),
+      similarHints: [],
+    }));
+  }
+
   return Promise.all(
     params.lanes.map(async (lane) => {
       const similarHints = await buildLaneSimilarHints({
@@ -284,20 +295,27 @@ export async function buildListeningSnapshot(params: {
   knownArtistsOverride?: Array<{ artistName: string; normalizedName: string; playcount: number }>;
   includeRecentTail?: boolean;
 }): Promise<ListeningSnapshot> {
+  const preset = params.timeWindow.preset;
   const [initialWeeklyArtists, initialKnownArtists, topTracks] = await Promise.all([
     params.weeklyArtistsOverride ??
-      getAggregatedWeeklyArtists({
-        username: params.username,
-        from: params.timeWindow.from,
-        to: params.timeWindow.to,
-      }),
-    params.knownArtistsOverride ?? getKnownArtists({ username: params.username }),
+      (preset === "custom"
+        ? getAggregatedWeeklyArtists({
+            username: params.username,
+            from: params.timeWindow.from,
+            to: params.timeWindow.to,
+          })
+        : getTopArtistsForPreset({
+            username: params.username,
+            preset,
+            limit: 120,
+          })),
+    params.knownArtistsOverride ?? getKnownArtistsLite({ username: params.username, limit: 300 }),
     getTopTrackSummary(params.username),
   ]);
   let weeklyArtists = initialWeeklyArtists;
   let knownArtists = initialKnownArtists;
 
-  if (params.includeRecentTail !== false) {
+  if (params.includeRecentTail !== false && preset === "custom") {
     const effectiveEnd = Math.min(params.timeWindow.to, Math.floor(Date.now() / 1000));
     const latestWeeklyBoundary = await getLatestWeeklyChartBoundary({ username: params.username });
     const tailFrom = latestWeeklyBoundary ? Math.max(params.timeWindow.from, latestWeeklyBoundary + 1) : params.timeWindow.from;
@@ -832,7 +850,7 @@ export async function generateDeterministicRecommendations(params: {
   const seedArtists = uniqueNormalizedArtists([
     ...params.laneContext.memberArtists,
     ...params.laneContext.representativeArtists,
-  ]).slice(0, 8);
+  ]).slice(0, 4);
 
   if (seedArtists.length === 0 && params.laneContext.similarHints.length === 0) {
     return {
@@ -906,7 +924,7 @@ export async function generateDeterministicRecommendations(params: {
   const rankedCandidates = [...candidateMap.entries()]
     .map(([normalizedName, value]) => ({ normalizedName, ...value }))
     .sort((a, b) => b.supportMatchTotal - a.supportMatchTotal)
-    .slice(0, 30);
+    .slice(0, 12);
 
   const recommendationCandidates: RecommendationCandidate[] = [];
 
