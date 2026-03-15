@@ -2,7 +2,7 @@
 
 ## Start Here
 - Read `ai-agent/system-overview.md` first.
-- Skim `src/server/discovery/pipeline.ts`, `src/server/agent/jobs.ts`, `src/server/lastfm/service.ts`, `src/components/discovery-app.tsx`, and `ai-agent/todos.md`.
+- Skim `src/server/discovery/pipeline.ts`, `src/server/agent/jobs.ts`, `src/server/lastfm/service.ts`, `src/server/lastfm/recent-tail.ts`, `src/components/discovery-app.tsx`, and `ai-agent/todos.md`.
 
 ## Product Intent
 - Build a serious Last.fm discovery tool.
@@ -19,6 +19,7 @@
 - Recommend flow should not rebuild full listening snapshots.
 - Recommend should use lane context from analysis + known-history scan.
 - Self-target known-history scans should prefer persisted weekly history + rollup, with a short readiness wait and partial-coverage fallback.
+- Recent-tail refresh should never wipe stored tail data on invalid windows (`to < from`); invalid windows no-op and keep prior snapshot.
 - Weekly backfill should progress via primary dispatch path; watchdog is rescue-only for stale/failed states.
 - Persist one recommendation run per lane per analysis; refresh replaces prior lane result.
 - If selected analysis window has no listening history, return empty lanes with explicit no-history messaging.
@@ -39,11 +40,12 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Next feature: history/profile UX polish (Profile home stats/backfill UX follow-through).
-- Then: legacy API cleanup and docs alignment.
-- Then: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).
+- Next feature: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).
+- Then: production hardening/observability and cost tuning.
 
 ## Recent Completed Work
+- Data/API cleanup: removed legacy username-connect endpoints and dropped `LastfmConnection` schema model.
+- Fixed recent-tail edge case where invalid windows could clear snapshot data and reset saved-artist progress deltas.
 - Profile/navigation IA: first-class pages at `/profile`, `/profile/discovery-list`, and `/profile/past-recommendations`.
 - Global authenticated navigation: shared top-nav pills (`Discovery List`, `Past Recommendations`, `Profile`) with compact mobile menu.
 - Past Recommendations now supports pagination/load-more.

@@ -11,6 +11,11 @@ export async function refreshRecentTailSnapshot(params: {
 }): Promise<Array<{ artistName: string; normalizedName: string; playcount: number }>> {
   const from = Math.floor(params.from);
   const to = Math.floor(params.to);
+
+  if (to < from) {
+    return getRecentTailArtistCountsFromStore({ userAccountId: params.userAccountId });
+  }
+
   const startedAt = new Date();
 
   await prisma.userRecentTailState.upsert({
@@ -37,33 +42,6 @@ export async function refreshRecentTailSnapshot(params: {
       lastErrorMessage: null,
     },
   });
-
-  if (to < from) {
-    await prisma.$transaction([
-      prisma.userRecentTailArtistCount.deleteMany({
-        where: { userAccountId: params.userAccountId },
-      }),
-      prisma.userRecentTailState.update({
-        where: { userAccountId: params.userAccountId },
-        data: {
-          status: "idle",
-          artistCount: 0,
-          lastPullCompletedAt: new Date(),
-          lastErrorMessage: null,
-        },
-      }),
-    ]);
-
-    await recordDataPull({
-      userAccountId: params.userAccountId,
-      source: "recent_tail",
-      status: "success",
-      windowFrom: from,
-      windowTo: to,
-      recordCount: 0,
-    });
-    return [];
-  }
 
   try {
     const rows = await getRecentArtistCounts({

@@ -1,73 +1,96 @@
 # Cloudflare Deploy-Readiness Plan
 
-This document captures the "go the extra mile" plan for running this app in a Cloudflare-native architecture with durable background execution.
+This document captures the Cloudflare-native, single-vendor deployment plan for Playhead.
+
+## Decision
+
+- Runtime/platform: Cloudflare (Workers-based Next.js deployment path)
+- Database: Cloudflare D1
+- ORM/query layer: Prisma ORM + `@prisma/adapter-d1`
+- Async execution: Cloudflare Queues
+- Scheduling: Cloudflare Cron Triggers
+- Progress transport baseline: polling (Durable Object fanout optional later)
 
 ## Target Architecture
 
-- Next.js on Cloudflare (OpenNext/Cloudflare adapter)
-- D1 as the relational database
-- Queues for background analyze/recommend execution
-- Durable Object (or polling-only fallback) for live progress fanout
-- R2 optional later for large logs/artifacts
+- Next.js app deployed to Cloudflare runtime
+- D1 as the relational store for app data and run/event state
+- Queue workers for analyze/recommend background execution
+- Cron-driven maintenance for weekly history/backfill/watchdog
+- Optional later: Durable Object push fanout, R2 for large artifacts
 
-## Phase 1: Runtime and Data Foundation
+## Phase 1: Runtime + Bindings Foundation
 
-1. Choose DB approach for D1:
-   - Option A (recommended): migrate from Prisma + SQLite to Drizzle/Kysely + D1
-   - Option B: keep Prisma with D1 adapter/runtime support (more complexity)
-2. Add `wrangler.toml` with bindings for D1, Queue, and Durable Object (if used).
-3. Establish local parity with `wrangler dev` and D1 migration workflow.
-4. Replace SQLite-file assumptions with D1-safe migration and seed scripts.
+1. Add/update `wrangler.toml` (or `wrangler.jsonc`) with bindings for:
+   - D1 database
+   - queue(s) for discovery jobs
+   - cron triggers for maintenance jobs
+2. Move all runtime secrets to Wrangler secrets (`LASTFM_*`, OpenAI keys, session encryption key).
+3. Ensure local parity with `wrangler dev` and Cloudflare-style env loading.
+4. Confirm Next.js runtime compatibility path and production build output for Cloudflare.
 
-## Phase 2: Durable Job Execution (Critical)
+## Phase 2: Prisma + D1 Data Workflow
 
-1. Update start endpoints to enqueue work only:
+1. Keep Prisma as the app ORM; configure Cloudflare runtime usage with D1 adapter.
+2. Adopt D1-safe migration workflow:
+   - generate SQL diffs from Prisma schema
+   - apply via Wrangler D1 migration/execute commands
+3. Replace SQLite-file assumptions with D1-backed migration and seed scripts.
+4. Execute one-time data migration from local SQLite to D1 with verification checks.
+
+## Phase 3: Queue-Backed Durable Job Execution (Critical)
+
+1. Start endpoints enqueue work only:
    - `POST /api/discovery/analyze/start`
    - `POST /api/discovery/recommend/start`
-2. Keep `AgentRun` as source of truth for queue/run state.
-3. Implement queue consumer that:
-   - loads run by `runId`
-   - applies idempotency/locking guard
-   - executes pipeline
-   - writes completion/failure and termination reason
-4. Configure retries/backoff and poison-message handling.
+2. Keep `AgentRun` as source of truth for run state.
+3. Queue consumer responsibilities:
+   - claim run idempotently
+   - execute pipeline
+   - persist `AgentRunEvent` progress
+   - write completion/failure + termination reason
+4. Configure retries/backoff and dead-letter/poison handling.
 
-## Phase 3: Progress Delivery
+## Phase 4: Progress Delivery (Cloudflare-safe baseline)
 
-1. Remove in-memory `EventEmitter` dependency.
-2. Persist all progress events in `AgentRunEvent`.
-3. Use polling as baseline UX (every 2-5 seconds).
-4. Optionally add Durable Object fanout for push updates once baseline is stable.
+1. Remove production dependence on in-memory `EventEmitter` fanout.
+2. Use DB-backed progress reads as canonical state.
+3. Use polling baseline UX (2-5s interval + backoff).
+4. Optionally add Durable Object fanout only if polling UX is insufficient.
 
-## Phase 4: Timeouts, Cancellation, Resilience
+## Phase 5: History Freshness + Scheduling Alignment
 
-1. Enforce hard step and run-level deadlines in queue consumer.
+1. Keep recent-tail persistence model (latest snapshot per user):
+   - `UserRecentTailState`
+   - `UserRecentTailArtistCount`
+2. Keep `UserDataPullLog` as canonical pull-timestamp telemetry source.
+3. Move weekly maintenance execution to Cloudflare-native triggers (cron/queue), including watchdog behavior.
+4. Ensure profile `Update now` orchestration remains supported in Cloudflare deployment path.
+
+## Phase 6: Resilience + Production Hardening
+
+1. Enforce run/step deadlines in queue consumer.
 2. Add cancellation endpoint (`POST /api/discovery/runs/[runId]/cancel`).
-3. Add scheduled stale-run sweeper for orphaned `running` jobs.
-4. Standardize error codes (e.g., `NO_HISTORY_WINDOW`, `NO_SEED_DATA`, `LASTFM_RATE_LIMIT`).
+3. Add stale-run sweeper for orphaned `running` jobs.
+4. Add per-user/session rate limits and duplicate-run prevention.
+5. Standardize user-facing error codes/messages (`NO_HISTORY_WINDOW`, `NO_SEED_DATA`, `LASTFM_RATE_LIMIT`).
 
-## Phase 5: Production Hardening on Cloudflare
+## Phase 7: Observability + Cost Tuning
 
-1. Add per-user/session rate limits on start endpoints.
-2. Prevent duplicate queued/running jobs for same logical request unless forced refresh.
-3. Add observability dashboards and alerts (queue failures, timeout rate, run latency).
-4. Move and manage all secrets through Wrangler secrets.
-
-## Phase 6: Cost and Performance Tuning
-
-1. Tune Last.fm cache TTLs to reduce repeated API calls.
-2. Batch DB writes in worker paths where possible.
-3. Keep polling cost-aware (2-5s with backoff on long runs).
-4. Bound recommendation expansion and artist-profile fanout conservatively.
+1. Add dashboards/alerts for queue failures, timeout rate, stale runs, and run latency.
+2. Tune Last.fm cache TTLs and keep polling cost-aware.
+3. Batch writes where safe in worker paths.
+4. Bound recommendation expansion/fanout conservatively for D1 throughput.
 
 ## Suggested Rollout Order
 
-1. Queue-backed run execution (retain polling UI).
-2. Remove in-memory fanout and rely on DB progress reads.
-3. Complete D1 migration.
-4. Add Durable Object push fanout only if polling UX is insufficient.
+1. Phase 1 + Phase 2 (foundation and data workflow)
+2. Phase 3 + Phase 4 (durable jobs + polling progress)
+3. Phase 5 (history freshness + scheduling)
+4. Phase 6 + Phase 7 (hardening and optimization)
 
 ## Scope Guidance
 
-- Minimal acceptable Cloudflare-ready baseline: Phases 1-4.
-- Full "extra mile" setup: Phases 1-6.
+- Minimal Cloudflare-ready baseline: Phases 1-4
+- Recommended production baseline for current app: Phases 1-6
+- Full "extra mile" setup: Phases 1-7

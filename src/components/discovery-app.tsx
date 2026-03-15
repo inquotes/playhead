@@ -711,7 +711,7 @@ export function DiscoveryApp() {
         <main className="mp-landing">
           <section className="mp-landing-card">
             <p className="mp-kicker">PLAYHEAD</p>
-            <h1>Discover artists you do not know yet.</h1>
+            <h1>Discover artists you don't know yet.</h1>
             <p>Recommendations based on what you already love, optimized for what is missing from your history.</p>
             <div className="mp-actions-row">
               {status?.isAuthenticated ? (

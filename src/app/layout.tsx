@@ -15,7 +15,7 @@ const jetBrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Music Discovery Tool",
+  title: "Playhead - Discover Music",
   description: "Discover new artists by lane from your Last.fm listening history.",
 };
 
