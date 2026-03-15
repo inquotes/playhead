@@ -40,8 +40,8 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Cloudflare deploy-readiness Phase 1-3 is complete and deployed.
-- Next feature: Cloudflare Phase 4 progress-delivery baseline hardening (polling-first canonical behavior, remove production dependence on in-memory fanout semantics).
+- Cloudflare deploy-readiness Phase 1-4 is complete and deployed.
+- Next feature: Cloudflare Phase 5 scheduling alignment (move weekly maintenance to Cloudflare-native triggers).
 - Then: production hardening/observability and cost tuning.
 
 ## Recent Completed Work
@@ -65,6 +65,7 @@
   - Phase 1 complete (Workers runtime + Wrangler/OpenNext setup)
   - Phase 2 complete (Prisma + D1 adapter and migration workflow)
   - Phase 3 complete (enqueue-only start endpoints, separate analyze/recommend queues with consumers + DLQs)
+  - Phase 4 complete (polling-canonical progress delivery with DB-backed incremental run events)
   - custom domain route configured (`play-head.com`)
 
 ## Commands

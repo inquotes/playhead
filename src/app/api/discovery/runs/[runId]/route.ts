@@ -9,7 +9,13 @@ type Params = {
 export async function GET(request: Request, context: Params) {
   try {
     const { runId } = await context.params;
-    const includeEvents = new URL(request.url).searchParams.get("includeEvents") === "1";
+    const url = new URL(request.url);
+    const includeEventsParam = url.searchParams.get("includeEvents");
+    const includeEvents = includeEventsParam === "1" || includeEventsParam === "true";
+    const sinceSeqRaw = Number(url.searchParams.get("sinceSeq") ?? "0");
+    const sinceSeq = Number.isFinite(sinceSeqRaw) ? Math.max(0, Math.floor(sinceSeqRaw)) : 0;
+    const limitRaw = Number(url.searchParams.get("limit") ?? "100");
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 100;
     const session = await getOrCreateVisitorSession();
 
     const run = await prisma.agentRun.findFirst({
@@ -26,10 +32,16 @@ export async function GET(request: Request, context: Params) {
 
     const events = includeEvents
       ? await prisma.agentRunEvent.findMany({
-          where: { runId },
+          where: {
+            runId,
+            ...(sinceSeq > 0 ? { seq: { gt: sinceSeq } } : {}),
+          },
           orderBy: { seq: "asc" },
+          take: limit,
         })
       : [];
+
+    const latestSeq = events.length > 0 ? events[events.length - 1]?.seq ?? sinceSeq : sinceSeq;
 
     const response = NextResponse.json({
       ok: true,
@@ -53,6 +65,7 @@ export async function GET(request: Request, context: Params) {
         payload: event.payloadJson,
         createdAt: event.createdAt,
       })),
+      latestSeq,
     });
 
     return attachVisitorCookie(response, session);

@@ -16,6 +16,10 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
   - start endpoints enqueue-only for analyze/recommend
   - separate queues + DLQs configured (`playhead-analyze-jobs`, `playhead-recommend-jobs`)
   - queue consumers deployed and processing via idempotent run-claim flow
+- Phase 4 complete:
+  - polling is the canonical progress transport for discovery runs
+  - run status API supports incremental DB-backed event reads (`sinceSeq`)
+  - production UX no longer depends on in-memory fanout semantics
 - Deployment status:
   - workers.dev live
   - custom domain route configured (`play-head.com`)
@@ -102,9 +106,8 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
 
 ## Suggested Rollout Order
 
-1. Phase 4 (progress delivery baseline hardening)
-2. Phase 5 (history freshness + scheduling)
-3. Phase 6 + Phase 7 (hardening and optimization)
+1. Phase 5 (history freshness + scheduling)
+2. Phase 6 + Phase 7 (hardening and optimization)
 
 ## Scope Guidance
 

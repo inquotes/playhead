@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
-import { publishAgentRunEvent } from "@/server/agent/events";
 import { type RangePreset, resolveRange } from "@/server/discovery/range";
 import {
   buildListeningSnapshot,
@@ -79,7 +78,7 @@ async function createRunEventAppender(runId: string): Promise<RunEventAppender> 
   let nextSeq = (latest?.seq ?? 0) + 1;
 
   return async ({ type, payload }) => {
-    const created = await prisma.agentRunEvent.create({
+    await prisma.agentRunEvent.create({
       data: {
         runId,
         seq: nextSeq,
@@ -88,14 +87,6 @@ async function createRunEventAppender(runId: string): Promise<RunEventAppender> 
       },
     });
     nextSeq += 1;
-
-    publishAgentRunEvent({
-      runId,
-      seq: created.seq,
-      type: created.type,
-      payload,
-      createdAt: created.createdAt.toISOString(),
-    });
   };
 }
 

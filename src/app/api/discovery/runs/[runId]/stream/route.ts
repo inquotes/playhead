@@ -1,5 +1,4 @@
 import { prisma } from "@/server/db";
-import { subscribeAgentRunEvents } from "@/server/agent/events";
 import { getOrCreateVisitorSession } from "@/server/session";
 
 type Params = {
@@ -29,12 +28,21 @@ export async function GET(request: Request, context: Params) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const backlog = await prisma.agentRunEvent.findMany({
-        where: { runId },
-        orderBy: { seq: "asc" },
-      });
+      let closed = false;
+      let sinceSeq = 0;
 
-      for (const event of backlog) {
+      const closeStream = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeat);
+        clearInterval(poller);
+        controller.close();
+      };
+
+      const pushEvent = (event: { seq: number; type: string; payloadJson: unknown; createdAt: Date }) => {
+        if (closed) {
+          return;
+        }
         controller.enqueue(
           encoder.encode(
             toSse("agent_event", {
@@ -45,20 +53,60 @@ export async function GET(request: Request, context: Params) {
             }),
           ),
         );
-      }
+        sinceSeq = Math.max(sinceSeq, event.seq);
+      };
 
-      const unsubscribe = subscribeAgentRunEvents(runId, (event) => {
-        controller.enqueue(encoder.encode(toSse("agent_event", event)));
+      const backlog = await prisma.agentRunEvent.findMany({
+        where: { runId },
+        orderBy: { seq: "asc" },
       });
 
+      for (const event of backlog) {
+        pushEvent(event);
+      }
+
+      const poller = setInterval(async () => {
+        if (closed) {
+          return;
+        }
+
+        try {
+          const [latestRun, newEvents] = await Promise.all([
+            prisma.agentRun.findUnique({
+              where: { id: runId },
+              select: { status: true },
+            }),
+            prisma.agentRunEvent.findMany({
+              where: {
+                runId,
+                seq: { gt: sinceSeq },
+              },
+              orderBy: { seq: "asc" },
+              take: 100,
+            }),
+          ]);
+
+          for (const event of newEvents) {
+            pushEvent(event);
+          }
+
+          if (!latestRun || latestRun.status === "completed" || latestRun.status === "failed") {
+            closeStream();
+          }
+        } catch {
+          closeStream();
+        }
+      }, 2_000);
+
       const heartbeat = setInterval(() => {
+        if (closed) {
+          return;
+        }
         controller.enqueue(encoder.encode(": ping\n\n"));
       }, 15_000);
 
       const onAbort = () => {
-        clearInterval(heartbeat);
-        unsubscribe();
-        controller.close();
+        closeStream();
       };
 
       request.signal.addEventListener("abort", onAbort, { once: true });

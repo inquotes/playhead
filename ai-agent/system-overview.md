@@ -6,7 +6,8 @@
 - Legacy username-connect/disconnect API flow has been removed (`/api/lastfm/connect/*`, `/api/lastfm/disconnect`).
 - Last.fm integration is centralized in `src/lib/lastfm.ts` (HTTP/retry) and `src/server/lastfm/service.ts` (normalization + DB cache).
 - Discovery pipeline is deterministic in `src/server/discovery/pipeline.ts`; LLM is used only for lane synthesis and recommendation explanations.
-- Async UX remains run-based (`AgentRun`, `AgentRunEvent`, SSE stream) while final outputs are persisted in `AnalysisRun` and `RecommendationRun`.
+- Async UX remains run-based (`AgentRun`, `AgentRunEvent`) with polling-canonical progress reads while final outputs are persisted in `AnalysisRun` and `RecommendationRun`.
+- Cloudflare deploy-readiness Phases 1-4 are complete (Workers runtime + D1 adapter/migrations + queue-backed analyze/recommend execution + polling-canonical progress delivery).
 - Expensive Last.fm responses are cached in `LastfmApiCache`.
 
 ## Core Runtime Model
@@ -40,7 +41,7 @@
 ## Request Flows
 
 ### Analyze (`POST /api/discovery/analyze/start`)
-1. Create `AgentRun` with `queued` status and launch async execution in-process.
+1. Create `AgentRun` with `queued` status and enqueue work to Cloudflare analyze queue.
 2. Build listening snapshot from Last.fm weekly chart aggregation + artist profile enrichment.
 3. If snapshot has no in-window artists, persist an empty-lane analysis with a no-history summary.
 4. Otherwise generate 3 lanes via strict JSON schema.
@@ -48,7 +49,7 @@
 6. Persist lanes and trace metadata to `AnalysisRun` and run result, including `targetLastfmUsername`.
 
 ### Recommend (`POST /api/discovery/recommend/start`)
-1. Create `AgentRun` with `queued` status and launch async execution in-process.
+1. Create `AgentRun` with `queued` status and enqueue work to Cloudflare recommend queue.
 2. Load selected lane context from `AnalysisRun`.
 3. Load known artist history for new-to-you filtering.
 4. If lane has no seed data, complete with empty recommendations and a clear strategy note.

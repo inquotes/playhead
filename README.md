@@ -174,15 +174,15 @@ Primary auth routes:
   - `GET /api/discovery/runs/[runId]`
 - Live SSE stream endpoint:
   - `GET /api/discovery/runs/[runId]/stream`
-- Frontend also polls run status and applies a client-side max wait guard to avoid infinite loading UI.
-- Current production posture: polling is canonical; SSE is best-effort until Phase 4 progress transport hardening is complete.
+- Frontend polls run status + incremental run events (`sinceSeq`) and applies a client-side max wait guard to avoid infinite loading UI.
+- Production posture: polling is canonical; SSE stream is optional compatibility transport.
 
 ## Cloudflare status
 
-- Phases 1-3 are implemented and deployed.
+- Phases 1-4 are implemented and deployed.
 - workers.dev URL: `https://playhead.ataitague.workers.dev`
 - custom domain: `https://play-head.com`
-- Phase 4 (next): make progress transport fully Cloudflare-safe (polling-first canonical path, remove dependency on in-memory fanout semantics).
+- Phase 5 (next): align weekly maintenance scheduling with Cloudflare-native triggers (cron/queue).
 
 ## Empty-data behavior
 

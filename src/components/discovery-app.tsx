@@ -594,22 +594,6 @@ export function DiscoveryApp() {
     }
   }
 
-  function subscribeRun(runId: string, onEvent: (event: AgentLiveEvent) => void): () => void {
-    const source = new EventSource(`/api/discovery/runs/${runId}/stream`);
-    source.addEventListener("agent_event", (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data) as AgentLiveEvent;
-        onEvent(payload);
-      } catch {
-        // ignore malformed payload
-      }
-    });
-
-    return () => {
-      source.close();
-    };
-  }
-
   async function waitForRunResult(runId: string) {
     return new Promise<{
       analysisRunId?: string;
@@ -623,31 +607,46 @@ export function DiscoveryApp() {
       recommendations: Recommendation[];
     }>((resolve, reject) => {
       let settled = false;
-      const seenSeq = new Set<number>();
       const maxWaitMs = 210_000;
+      let sinceSeq = 0;
+      let pollDelayMs = 2_000;
+      let consecutiveFailures = 0;
+      let pollHandle: ReturnType<typeof setTimeout> | null = null;
 
-      const unsubscribe = subscribeRun(runId, (event) => {
-        if (seenSeq.has(event.seq)) return;
-        seenSeq.add(event.seq);
-        setLiveEvents((prev) => [...prev, event].slice(-40));
-      });
+      const scheduleNextPoll = (delayMs: number) => {
+        pollHandle = setTimeout(() => {
+          void pollOnce();
+        }, delayMs);
+      };
 
       const finish = () => {
-        unsubscribe();
-        clearInterval(poll);
+        if (pollHandle) {
+          clearTimeout(pollHandle);
+        }
         clearTimeout(timeoutHandle);
       };
 
-      const timeoutHandle = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        finish();
-        reject(new Error("This run took longer than expected and was stopped. Please try again."));
-      }, maxWaitMs);
-
-      const poll = setInterval(async () => {
+      const pollOnce = async () => {
         try {
-          const status = await jsonFetch<{ ok: true; run: AgentRun }>(`/api/discovery/runs/${runId}`);
+          const status = await jsonFetch<{
+            ok: true;
+            run: AgentRun;
+            events: AgentLiveEvent[];
+            latestSeq: number;
+          }>(`/api/discovery/runs/${runId}?includeEvents=1&sinceSeq=${sinceSeq}&limit=120`);
+
+          consecutiveFailures = 0;
+
+          if (status.events.length > 0) {
+            setLiveEvents((prev) => {
+              const seen = new Set(prev.map((event) => event.seq));
+              const additions = status.events.filter((event) => !seen.has(event.seq));
+              return additions.length > 0 ? [...prev, ...additions].slice(-40) : prev;
+            });
+          }
+
+          sinceSeq = Math.max(sinceSeq, status.latestSeq);
+
           if (status.run.status === "completed") {
             settled = true;
             finish();
@@ -669,15 +668,47 @@ export function DiscoveryApp() {
             settled = true;
             finish();
             reject(new Error(status.run.errorMessage ?? "Run failed."));
+            return;
+          }
+
+          pollDelayMs = Math.min(5_000, Math.round(pollDelayMs * 1.2));
+          if (!settled) {
+            scheduleNextPoll(pollDelayMs);
           }
         } catch (error) {
-          if (!settled) {
+          if (settled) {
+            return;
+          }
+
+          const message = error instanceof Error ? error.message : "Failed to fetch run status.";
+          if (message === "Run not found.") {
+            settled = true;
+            finish();
+            reject(new Error(message));
+            return;
+          }
+
+          consecutiveFailures += 1;
+          pollDelayMs = Math.min(5_000, Math.round(pollDelayMs * 1.3));
+          if (consecutiveFailures >= 4) {
             settled = true;
             finish();
             reject(error instanceof Error ? error : new Error("Failed to fetch run status."));
+            return;
           }
+
+          scheduleNextPoll(pollDelayMs);
         }
-      }, 5000);
+      };
+
+      const timeoutHandle = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        finish();
+        reject(new Error("This run took longer than expected and was stopped. Please try again."));
+      }, maxWaitMs);
+
+      scheduleNextPoll(0);
     });
   }
 
