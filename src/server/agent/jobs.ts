@@ -9,7 +9,7 @@ import {
   synthesizeTasteLanes,
 } from "@/server/discovery/pipeline";
 import type { Lane } from "@/server/discovery/types";
-import { getKnownArtists, getKnownArtistsLite } from "@/server/lastfm/service";
+import { getKnownArtists } from "@/server/lastfm/service";
 import {
   ensureRecentYearHistory,
   ensureWeeklyHistoryInBackground,
@@ -37,11 +37,6 @@ function mergeArtistPlaycounts(
     }
   }
   return [...merged.values()].sort((a, b) => b.playcount - a.playcount);
-}
-
-function isCloudflareSubrequestLimitError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : "";
-  return /too many subrequests/i.test(message);
 }
 
 type RunEventAppender = (event: {
@@ -630,15 +625,7 @@ export async function launchRecommendRun(params: {
         knownArtists = mergeArtistPlaycounts(knownArtists, recentTail);
       }
     } else {
-      try {
-        knownArtists = await getKnownArtists({ username: targetUsername });
-      } catch (error) {
-        if (!isCloudflareSubrequestLimitError(error)) {
-          throw error;
-        }
-        knownHistoryCoverage = "partial";
-        knownArtists = await getKnownArtistsLite({ username: targetUsername, limit: 300 });
-      }
+      knownArtists = await getKnownArtists({ username: targetUsername });
     }
 
     await appendRunEvent({
@@ -670,32 +657,30 @@ export async function launchRecommendRun(params: {
         llmRole: "explanations-only",
       };
 
-      const recommendationRun = await prisma.$transaction(async (tx) => {
-        await tx.recommendationRun.deleteMany({
-          where: {
-            analysisRunId: analysisRun.id,
-            selectedLane: selectedLane.id,
-            userAccountId: params.userAccountId ?? null,
-            targetLastfmUsername: targetUsername,
-          },
-        });
+      await prisma.recommendationRun.deleteMany({
+        where: {
+          analysisRunId: analysisRun.id,
+          selectedLane: selectedLane.id,
+          userAccountId: params.userAccountId ?? null,
+          targetLastfmUsername: targetUsername,
+        },
+      });
 
-        return tx.recommendationRun.create({
-          data: {
-            visitorSessionId: params.visitorSessionId,
-            userAccountId: params.userAccountId,
-            targetLastfmUsername: targetUsername,
-            analysisRunId: analysisRun.id,
-            selectedLane: selectedLane.id,
-            newOnly: true,
-            resultsJson: {
-              strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
-              recommendations: [],
-              candidates: [],
-              trace: traceJson,
-            } as Prisma.InputJsonValue,
-          },
-        });
+      const recommendationRun = await prisma.recommendationRun.create({
+        data: {
+          visitorSessionId: params.visitorSessionId,
+          userAccountId: params.userAccountId,
+          targetLastfmUsername: targetUsername,
+          analysisRunId: analysisRun.id,
+          selectedLane: selectedLane.id,
+          newOnly: true,
+          resultsJson: {
+            strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
+            recommendations: [],
+            candidates: [],
+            trace: traceJson,
+          } as Prisma.InputJsonValue,
+        },
       });
 
       await appendRunEvent({
@@ -776,32 +761,30 @@ export async function launchRecommendRun(params: {
       timing: recommendationResult.timing ?? null,
     };
 
-    const recommendationRun = await prisma.$transaction(async (tx) => {
-      await tx.recommendationRun.deleteMany({
-        where: {
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          userAccountId: params.userAccountId ?? null,
-          targetLastfmUsername: targetUsername,
-        },
-      });
+    await prisma.recommendationRun.deleteMany({
+      where: {
+        analysisRunId: analysisRun.id,
+        selectedLane: selectedLane.id,
+        userAccountId: params.userAccountId ?? null,
+        targetLastfmUsername: targetUsername,
+      },
+    });
 
-      return tx.recommendationRun.create({
-        data: {
-          visitorSessionId: params.visitorSessionId,
-          userAccountId: params.userAccountId,
-          targetLastfmUsername: targetUsername,
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          newOnly: true,
-          resultsJson: {
-            strategyNote: recommendationResult.strategyNote,
-            recommendations: recommendationResult.recommendations,
-            candidates: recommendationResult.candidates,
-            trace: traceJson,
-          } as Prisma.InputJsonValue,
-        },
-      });
+    const recommendationRun = await prisma.recommendationRun.create({
+      data: {
+        visitorSessionId: params.visitorSessionId,
+        userAccountId: params.userAccountId,
+        targetLastfmUsername: targetUsername,
+        analysisRunId: analysisRun.id,
+        selectedLane: selectedLane.id,
+        newOnly: true,
+        resultsJson: {
+          strategyNote: recommendationResult.strategyNote,
+          recommendations: recommendationResult.recommendations,
+          candidates: recommendationResult.candidates,
+          trace: traceJson,
+        } as Prisma.InputJsonValue,
+      },
     });
 
     const resultJson = {

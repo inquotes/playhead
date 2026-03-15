@@ -25,6 +25,16 @@
       "service": "playhead"
     }
   ],
+  "workflows": [
+    {
+      "name": "playhead-weekly-backfill",
+      "binding": "WEEKLY_BACKFILL_WORKFLOW",
+      "class_name": "WeeklyBackfillWorkflow",
+      "limits": {
+        "steps": 25000
+      }
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -61,6 +71,9 @@
         "dead_letter_queue": "playhead-recommend-jobs-dlq"
       }
     ]
+  },
+  "limits": {
+    "subrequests": 10000
   },
   "vars": {
     "PIPELINE_TIMEOUT_MS": "180000"

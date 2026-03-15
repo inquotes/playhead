@@ -88,8 +88,6 @@ async function enqueueJob(params: { userAccountId: string; username: string; pri
     where: { userAccountId: params.userAccountId },
     data: {
       status: "idle",
-      recentYearReadyAt: null,
-      fullHistoryReadyAt: null,
     },
   });
 
@@ -183,7 +181,7 @@ async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Pr
   });
   const doneSet = new Set(doneWeeks.map((week) => `${week.weekStart}:${week.weekEnd}`));
 
-  const recentWeeks = weeks.slice(0, RECENT_YEAR_WEEK_COUNT);
+  const recentWeeks = weeks.slice(0, Math.min(RECENT_YEAR_WEEK_COUNT, weeks.length));
   const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => doneSet.has(weekKey(week)));
   const fullReady = weeks.length > 0 && weeks.every((week) => doneSet.has(weekKey(week)));
 
@@ -213,94 +211,94 @@ async function processSingleWeek(params: {
     const payload = await getWeeklyArtistChart({ user: username, from: week.from, to: week.to });
     const rows = parseWeeklyArtistChart(payload);
 
-    await prisma.$transaction(async (tx) => {
-      for (const row of rows) {
-        const existing = await tx.userWeeklyArtistPlaycount.findUnique({
-          where: {
-            userAccountId_weekStart_weekEnd_normalizedName: {
-              userAccountId,
-              weekStart: week.from,
-              weekEnd: week.to,
-              normalizedName: row.normalizedName,
-            },
-          },
-          select: { playcount: true },
-        });
+    const existingRows = await prisma.userWeeklyArtistPlaycount.findMany({
+      where: {
+        userAccountId,
+        weekStart: week.from,
+        weekEnd: week.to,
+      },
+      select: {
+        normalizedName: true,
+        playcount: true,
+      },
+    });
 
-        const previous = existing?.playcount ?? 0;
-        const delta = row.playcount - previous;
+    const existingByArtist = new Map(existingRows.map((row) => [row.normalizedName, row.playcount]));
 
-        await tx.userWeeklyArtistPlaycount.upsert({
-          where: {
-            userAccountId_weekStart_weekEnd_normalizedName: {
-              userAccountId,
-              weekStart: week.from,
-              weekEnd: week.to,
-              normalizedName: row.normalizedName,
-            },
-          },
-          create: {
-            userAccountId,
-            weekStart: week.from,
-            weekEnd: week.to,
-            artistName: row.artistName,
-            normalizedName: row.normalizedName,
-            playcount: row.playcount,
-          },
-          update: {
-            artistName: row.artistName,
-            playcount: row.playcount,
-          },
-        });
+    for (const row of rows) {
+      const previous = existingByArtist.get(row.normalizedName) ?? 0;
+      const delta = row.playcount - previous;
 
-        if (delta !== 0) {
-          await tx.userKnownArtistRollup.upsert({
-            where: {
-              userAccountId_normalizedName: {
-                userAccountId,
-                normalizedName: row.normalizedName,
-              },
-            },
-            create: {
-              userAccountId,
-              artistName: row.artistName,
-              normalizedName: row.normalizedName,
-              playcount: Math.max(0, delta),
-            },
-            update: {
-              artistName: row.artistName,
-              playcount: { increment: delta },
-            },
-          });
-        }
-      }
-
-      await tx.userWeeklyIngestedWeek.upsert({
+      await prisma.userWeeklyArtistPlaycount.upsert({
         where: {
-          userAccountId_weekStart_weekEnd: {
+          userAccountId_weekStart_weekEnd_normalizedName: {
             userAccountId,
             weekStart: week.from,
             weekEnd: week.to,
+            normalizedName: row.normalizedName,
           },
         },
         create: {
           userAccountId,
           weekStart: week.from,
           weekEnd: week.to,
-          status: "done",
-          artistCount: rows.length,
-          attemptCount: 1,
-          lastAttemptAt: new Date(),
-          lastErrorMessage: null,
+          artistName: row.artistName,
+          normalizedName: row.normalizedName,
+          playcount: row.playcount,
         },
         update: {
-          status: "done",
-          artistCount: rows.length,
-          attemptCount: { increment: 1 },
-          lastAttemptAt: new Date(),
-          lastErrorMessage: null,
+          artistName: row.artistName,
+          playcount: row.playcount,
         },
       });
+
+      if (delta !== 0) {
+        await prisma.userKnownArtistRollup.upsert({
+          where: {
+            userAccountId_normalizedName: {
+              userAccountId,
+              normalizedName: row.normalizedName,
+            },
+          },
+          create: {
+            userAccountId,
+            artistName: row.artistName,
+            normalizedName: row.normalizedName,
+            playcount: Math.max(0, delta),
+          },
+          update: {
+            artistName: row.artistName,
+            playcount: { increment: delta },
+          },
+        });
+      }
+    }
+
+    await prisma.userWeeklyIngestedWeek.upsert({
+      where: {
+        userAccountId_weekStart_weekEnd: {
+          userAccountId,
+          weekStart: week.from,
+          weekEnd: week.to,
+        },
+      },
+      create: {
+        userAccountId,
+        weekStart: week.from,
+        weekEnd: week.to,
+        status: "done",
+        artistCount: rows.length,
+        attemptCount: 1,
+        lastAttemptAt: new Date(),
+        lastErrorMessage: null,
+      },
+      update: {
+        status: "done",
+        artistCount: rows.length,
+        attemptCount: { increment: 1 },
+        lastAttemptAt: new Date(),
+        lastErrorMessage: null,
+      },
     });
 
     return true;
@@ -719,8 +717,16 @@ export async function getKnownArtistsFromWeeklyRollup(params: {
 
 export function isRangeWithinRecentYear(from: number, to: number): boolean {
   const now = Math.floor(Date.now() / 1000);
-  const oneYearAgo = now - 366 * 24 * 60 * 60;
+  const oneYearAgo = now - RECENT_YEAR_WEEK_COUNT * 7 * 24 * 60 * 60;
   return from >= oneYearAgo && to <= now;
+}
+
+export async function enqueueWeeklyBackfillJob(params: {
+  userAccountId: string;
+  username: string;
+  priority?: number;
+}): Promise<void> {
+  await enqueueJob(params);
 }
 
 export async function getAggregatedWeeklyArtistsFromStore(params: {

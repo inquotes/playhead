@@ -51,26 +51,26 @@ export async function refreshRecentTailSnapshot(params: {
     });
 
     const pulledAt = new Date();
-    await prisma.$transaction(async (tx) => {
-      await tx.userRecentTailArtistCount.deleteMany({
+    const txOps = [
+      prisma.userRecentTailArtistCount.deleteMany({
         where: { userAccountId: params.userAccountId },
-      });
-
-      if (rows.length > 0) {
-        await tx.userRecentTailArtistCount.createMany({
-          data: rows.map((row) => ({
-            userAccountId: params.userAccountId,
-            artistName: row.artistName,
-            normalizedName: row.normalizedName,
-            playcount: row.playcount,
-            tailFrom: from,
-            tailTo: to,
-            pulledAt,
-          })),
-        });
-      }
-
-      await tx.userRecentTailState.update({
+      }),
+      ...(rows.length > 0
+        ? [
+            prisma.userRecentTailArtistCount.createMany({
+              data: rows.map((row) => ({
+                userAccountId: params.userAccountId,
+                artistName: row.artistName,
+                normalizedName: row.normalizedName,
+                playcount: row.playcount,
+                tailFrom: from,
+                tailTo: to,
+                pulledAt,
+              })),
+            }),
+          ]
+        : []),
+      prisma.userRecentTailState.update({
         where: { userAccountId: params.userAccountId },
         data: {
           status: "idle",
@@ -81,8 +81,9 @@ export async function refreshRecentTailSnapshot(params: {
           lastPullCompletedAt: pulledAt,
           lastErrorMessage: null,
         },
-      });
-    });
+      }),
+    ];
+    await prisma.$transaction(txOps);
 
     await recordDataPull({
       userAccountId: params.userAccountId,

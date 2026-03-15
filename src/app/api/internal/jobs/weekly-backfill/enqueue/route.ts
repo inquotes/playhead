@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { runWeeklyBackfillDispatcher } from "@/server/lastfm/weekly-history";
+import { enqueueWeeklyBackfillJob } from "@/server/lastfm/weekly-history";
 
 const bodySchema = z.object({
-  limit: z.number().int().min(1).max(50).optional(),
-  userAccountId: z.string().min(1).optional(),
+  userAccountId: z.string().min(1),
+  username: z.string().min(1),
+  priority: z.number().int().min(1).max(1000).optional(),
 });
 
 function isAuthorized(request: Request): boolean {
@@ -23,15 +24,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, message: "Unauthorized." }, { status: 401 });
     }
 
-    const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
-    const payload = parsed.success ? parsed.data : {};
-    const result = await runWeeklyBackfillDispatcher({
-      limit: payload.limit ?? 10,
-      userAccountId: payload.userAccountId,
-    });
-    return NextResponse.json({ ok: true, ...result });
+    const payload = bodySchema.parse(await request.json());
+    await enqueueWeeklyBackfillJob(payload);
+    return NextResponse.json({ ok: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Backfill runner failed.";
+    const message = error instanceof Error ? error.message : "Failed to enqueue weekly backfill job.";
     return NextResponse.json({ ok: false, message }, { status: 500 });
   }
 }

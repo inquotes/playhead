@@ -57,37 +57,35 @@ export async function POST(request: Request) {
       limit: payload.limit,
     });
 
-    const recommendationRun = await prisma.$transaction(async (tx) => {
-      await tx.recommendationRun.deleteMany({
-        where: {
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          userAccountId: userAccount.id,
-          targetLastfmUsername: targetUsername,
-        },
-      });
+    await prisma.recommendationRun.deleteMany({
+      where: {
+        analysisRunId: analysisRun.id,
+        selectedLane: selectedLane.id,
+        userAccountId: userAccount.id,
+        targetLastfmUsername: targetUsername,
+      },
+    });
 
-      return tx.recommendationRun.create({
-        data: {
-          visitorSessionId,
-          userAccountId: userAccount.id,
-          targetLastfmUsername: targetUsername,
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          newOnly: true,
-          resultsJson: {
-            strategyNote: recommendationResult.strategyNote,
-            recommendations: recommendationResult.recommendations,
-            candidates: recommendationResult.candidates,
-            trace: {
-              pipeline: "api-first-v1",
-              dataSource: "official-lastfm-api",
-              deterministicRanking: true,
-              llmRole: "explanations-only",
-            },
-          } as Prisma.InputJsonValue,
-        },
-      });
+    const recommendationRun = await prisma.recommendationRun.create({
+      data: {
+        visitorSessionId,
+        userAccountId: userAccount.id,
+        targetLastfmUsername: targetUsername,
+        analysisRunId: analysisRun.id,
+        selectedLane: selectedLane.id,
+        newOnly: true,
+        resultsJson: {
+          strategyNote: recommendationResult.strategyNote,
+          recommendations: recommendationResult.recommendations,
+          candidates: recommendationResult.candidates,
+          trace: {
+            pipeline: "api-first-v1",
+            dataSource: "official-lastfm-api",
+            deterministicRanking: true,
+            llmRole: "explanations-only",
+          },
+        } as Prisma.InputJsonValue,
+      },
     });
 
     const response = NextResponse.json({

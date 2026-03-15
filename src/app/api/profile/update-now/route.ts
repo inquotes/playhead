@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { refreshRecentTailSnapshot } from "@/server/lastfm/recent-tail";
-import { ensureWeeklyHistoryInBackground, getLatestCompletedWeekEndFromStore, runWeeklyBackfillDispatcher } from "@/server/lastfm/weekly-history";
+import { getLatestCompletedWeekEndFromStore } from "@/server/lastfm/weekly-history";
 
 const RECENT_TAIL_FALLBACK_SECONDS = 14 * 24 * 60 * 60;
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const user = await getCurrentUserAccount();
     if (!user) {
@@ -36,8 +36,25 @@ export async function POST() {
       });
     }
 
-    ensureWeeklyHistoryInBackground({ userAccountId: user.id, username: user.lastfmUsername });
-    await runWeeklyBackfillDispatcher({ limit: 1, userAccountId: user.id });
+    const triggerSecret = process.env.BACKFILL_WORKFLOW_TRIGGER_SECRET;
+    const triggerUrl = new URL("/__internal/workflows/weekly-backfill/trigger", request.url);
+    const triggerResponse = await fetch(triggerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(triggerSecret ? { "x-workflow-trigger-secret": triggerSecret } : {}),
+      },
+      body: JSON.stringify({
+        userAccountId: user.id,
+        username: user.lastfmUsername,
+        trigger: "update_now",
+      }),
+    });
+
+    if (!triggerResponse.ok) {
+      const triggerPayload = (await triggerResponse.json().catch(() => null)) as { message?: string } | null;
+      throw new Error(triggerPayload?.message ?? "Failed to trigger weekly backfill workflow.");
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {
