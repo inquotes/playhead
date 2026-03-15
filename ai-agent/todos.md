@@ -2,10 +2,14 @@
 
 ## Current Focus (Next)
 
-1. Deploy readiness (Cloudflare-first)
+1. Cloudflare baseline completion (Phase 4)
 
-- implement `ai-agent/cloudflare-deploy-readiness-plan.md` in phased order
-- prioritize Phase 1-4 as the minimum production baseline
+- implement Phase 4 from `ai-agent/cloudflare-deploy-readiness-plan.md`
+- make polling the canonical progress transport and remove production dependence on in-memory fanout semantics
+
+2. Cloudflare scheduling alignment (Phase 5)
+
+- move weekly backfill/watchdog execution to Cloudflare-native triggers (cron/queue)
 
 ## Backlog Ideas
 

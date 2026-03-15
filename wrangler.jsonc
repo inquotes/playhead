@@ -1,0 +1,68 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "playhead",
+  "main": "worker.ts",
+  "compatibility_date": "2026-03-14",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "workers_dev": true,
+  "preview_urls": true,
+  "routes": [
+    {
+      "pattern": "play-head.com",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "playhead"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "playhead-db",
+      "database_id": "dddf45f8-3bea-4396-96c9-d35d4d2cdd80"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "ANALYZE_JOBS",
+        "queue": "playhead-analyze-jobs"
+      },
+      {
+        "binding": "RECOMMEND_JOBS",
+        "queue": "playhead-recommend-jobs"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "playhead-analyze-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 3,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "dead_letter_queue": "playhead-analyze-jobs-dlq"
+      },
+      {
+        "queue": "playhead-recommend-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 3,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "dead_letter_queue": "playhead-recommend-jobs-dlq"
+      }
+    ]
+  },
+  "vars": {
+    "PIPELINE_TIMEOUT_MS": "180000"
+  }
+}

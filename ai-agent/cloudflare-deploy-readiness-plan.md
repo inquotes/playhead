@@ -2,6 +2,24 @@
 
 This document captures the Cloudflare-native, single-vendor deployment plan for Playhead.
 
+## Implementation Status
+
+- Phase 1 complete:
+  - OpenNext + Wrangler CLI deploy path in repo
+  - D1 binding configured in `wrangler.jsonc`
+  - runtime secrets moved to Wrangler secrets
+- Phase 2 complete:
+  - Prisma runtime wired for D1 via `@prisma/adapter-d1`
+  - D1 migration workflow established (`prisma migrate diff` -> `wrangler d1 migrations apply`)
+  - initial schema migration applied locally and remotely
+- Phase 3 complete:
+  - start endpoints enqueue-only for analyze/recommend
+  - separate queues + DLQs configured (`playhead-analyze-jobs`, `playhead-recommend-jobs`)
+  - queue consumers deployed and processing via idempotent run-claim flow
+- Deployment status:
+  - workers.dev live
+  - custom domain route configured (`play-head.com`)
+
 ## Decision
 
 - Runtime/platform: Cloudflare (Workers-based Next.js deployment path)
@@ -84,10 +102,9 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
 
 ## Suggested Rollout Order
 
-1. Phase 1 + Phase 2 (foundation and data workflow)
-2. Phase 3 + Phase 4 (durable jobs + polling progress)
-3. Phase 5 (history freshness + scheduling)
-4. Phase 6 + Phase 7 (hardening and optimization)
+1. Phase 4 (progress delivery baseline hardening)
+2. Phase 5 (history freshness + scheduling)
+3. Phase 6 + Phase 7 (hardening and optimization)
 
 ## Scope Guidance
 

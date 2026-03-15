@@ -40,7 +40,8 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Next feature: Cloudflare deploy-readiness via `ai-agent/cloudflare-deploy-readiness-plan.md` (Phase 1-4 baseline).
+- Cloudflare deploy-readiness Phase 1-3 is complete and deployed.
+- Next feature: Cloudflare Phase 4 progress-delivery baseline hardening (polling-first canonical behavior, remove production dependence on in-memory fanout semantics).
 - Then: production hardening/observability and cost tuning.
 
 ## Recent Completed Work
@@ -60,6 +61,11 @@
   - save-time baseline capture (`knownPlaycountAtSave`) for progress tracking
 - Recommendation card simplification: removed "Seeded from ..." and made album links clickable.
 - Cluster detail sidebar: added collapsible "More artists in this cluster" and improved member-artist expansion.
+- Cloudflare deploy-readiness:
+  - Phase 1 complete (Workers runtime + Wrangler/OpenNext setup)
+  - Phase 2 complete (Prisma + D1 adapter and migration workflow)
+  - Phase 3 complete (enqueue-only start endpoints, separate analyze/recommend queues with consumers + DLQs)
+  - custom domain route configured (`play-head.com`)
 
 ## Commands
 - `npm run lint`

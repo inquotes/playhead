@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { prisma } from "@/server/db";
-import { launchRecommendRun } from "@/server/agent/jobs";
 import type { Lane } from "@/server/discovery/types";
 import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
@@ -61,17 +61,25 @@ export async function POST(request: Request) {
       },
     });
 
-    void launchRecommendRun({
-      runId: run.id,
-      visitorSessionId,
-      userAccountId: userAccount.id,
-      username: targetUsername,
-      targetLastfmUsername: targetUsername,
-      useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
-      analysisRunId: payload.analysisRunId,
-      laneId: payload.laneId,
-      limit: payload.limit,
-    });
+    const { env } = getCloudflareContext();
+    try {
+      await (env as unknown as { RECOMMEND_JOBS: Queue }).RECOMMEND_JOBS.send({
+        runId: run.id,
+        mode: "recommend",
+        enqueuedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      await prisma.agentRun.update({
+        where: { id: run.id },
+        data: {
+          status: "failed",
+          errorMessage: error instanceof Error ? error.message : "Failed to queue recommendation run.",
+          completedAt: new Date(),
+          terminationReason: "error",
+        },
+      });
+      throw error;
+    }
 
     const response = NextResponse.json({
       ok: true,

@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 import { prisma } from "@/server/db";
 import { publishAgentRunEvent } from "@/server/agent/events";
 import { type RangePreset, resolveRange } from "@/server/discovery/range";
@@ -117,6 +118,157 @@ async function markRunFailed(
   await appendRunEvent({
     type: "run_failed",
     payload: { message: `Run failed: ${message}` },
+  });
+}
+
+export async function markRunFailedById(runId: string, message: string) {
+  try {
+    const appendRunEvent = await createRunEventAppender(runId);
+    await markRunFailed(runId, message, appendRunEvent, "error");
+  } catch {
+    await prisma.agentRun.updateMany({
+      where: { id: runId, NOT: { status: "completed" } },
+      data: {
+        status: "failed",
+        errorMessage: message,
+        completedAt: new Date(),
+        terminationReason: "error",
+      },
+    });
+  }
+}
+
+const analyzeRequestSchema = z.object({
+  preset: z.enum(["7d", "1m", "6m", "1y", "custom"]),
+  from: z.number().int().optional(),
+  to: z.number().int().optional(),
+  targetUsername: z.string().trim().min(2).max(64).optional(),
+});
+
+const recommendRequestSchema = z.object({
+  analysisRunId: z.string().min(1),
+  laneId: z.string().min(1),
+  limit: z.number().int().min(1).max(8).default(4),
+});
+
+async function claimQueuedRun(runId: string, mode: "analyze" | "recommend") {
+  const claimed = await prisma.agentRun.updateMany({
+    where: {
+      id: runId,
+      mode,
+      status: "queued",
+    },
+    data: {
+      status: "running",
+      startedAt: new Date(),
+    },
+  });
+  return claimed.count === 1;
+}
+
+export async function processAnalyzeRunById(runId: string) {
+  const claimed = await claimQueuedRun(runId, "analyze");
+  if (!claimed) {
+    return;
+  }
+
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      visitorSessionId: true,
+      userAccountId: true,
+      targetLastfmUsername: true,
+      requestJson: true,
+    },
+  });
+
+  if (!run) {
+    await markRunFailedById(runId, "Queued analyze run was not found.");
+    return;
+  }
+
+  const userAccount = run.userAccountId
+    ? await prisma.userAccount.findUnique({ where: { id: run.userAccountId }, select: { lastfmUsername: true } })
+    : null;
+
+  if (!userAccount) {
+    await markRunFailedById(runId, "Analyze run is missing an authenticated Last.fm account.");
+    return;
+  }
+
+  const parsed = analyzeRequestSchema.safeParse(run.requestJson);
+  if (!parsed.success) {
+    await markRunFailedById(runId, "Analyze run payload is invalid.");
+    return;
+  }
+
+  const payload = parsed.data;
+  const targetUsername = (run.targetLastfmUsername ?? userAccount.lastfmUsername).toLowerCase();
+
+  await launchAnalyzeRun({
+    runId: run.id,
+    visitorSessionId: run.visitorSessionId,
+    userAccountId: run.userAccountId ?? undefined,
+    username: targetUsername,
+    targetLastfmUsername: targetUsername,
+    useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
+    preset: payload.preset,
+    from: payload.from,
+    to: payload.to,
+  });
+}
+
+export async function processRecommendRunById(runId: string) {
+  const claimed = await claimQueuedRun(runId, "recommend");
+  if (!claimed) {
+    return;
+  }
+
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      visitorSessionId: true,
+      userAccountId: true,
+      targetLastfmUsername: true,
+      requestJson: true,
+    },
+  });
+
+  if (!run) {
+    await markRunFailedById(runId, "Queued recommendation run was not found.");
+    return;
+  }
+
+  const userAccount = run.userAccountId
+    ? await prisma.userAccount.findUnique({ where: { id: run.userAccountId }, select: { lastfmUsername: true } })
+    : null;
+
+  if (!userAccount) {
+    await markRunFailedById(runId, "Recommendation run is missing an authenticated Last.fm account.");
+    return;
+  }
+
+  const parsed = recommendRequestSchema.safeParse(run.requestJson);
+  if (!parsed.success) {
+    await markRunFailedById(runId, "Recommendation run payload is invalid.");
+    return;
+  }
+
+  const payload = parsed.data;
+  const targetUsername = (run.targetLastfmUsername ?? userAccount.lastfmUsername).toLowerCase();
+
+  await launchRecommendRun({
+    runId: run.id,
+    visitorSessionId: run.visitorSessionId,
+    userAccountId: run.userAccountId ?? undefined,
+    username: targetUsername,
+    targetLastfmUsername: targetUsername,
+    useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
+    analysisRunId: payload.analysisRunId,
+    laneId: payload.laneId,
+    limit: payload.limit,
   });
 }
 

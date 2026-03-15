@@ -10,7 +10,7 @@ Music discovery app with deterministic retrieval and LLM-assisted interpretation
 
 The app uses Last.fm Web Authentication and stores an app session cookie after connect.
 
-## Local setup
+## Local setup (Node runtime)
 
 1. Install dependencies
 
@@ -26,7 +26,7 @@ cp .env.example .env
 
 Set `OPENAI_API_KEY` in `.env`.
 
-3. Create database schema
+3. Create local database schema
 
 ```bash
 npm run db:push
@@ -39,6 +39,107 @@ npm run dev
 ```
 
 Open http://localhost:3000.
+
+## Cloudflare CLI deploy setup (Phase 1 + 3)
+
+1. Install dependencies and generate Prisma client
+
+```bash
+npm install --cache .npm-cache
+npm run db:generate
+```
+
+2. Copy local dev vars file (for `wrangler dev` / OpenNext preview)
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+3. Authenticate Wrangler and create your D1/Queue resources
+
+```bash
+npx wrangler login
+npx wrangler d1 create playhead-db
+npx wrangler queues create playhead-analyze-jobs
+npx wrangler queues create playhead-recommend-jobs
+npx wrangler queues create playhead-analyze-jobs-dlq
+npx wrangler queues create playhead-recommend-jobs-dlq
+```
+
+4. Update `wrangler.jsonc` with the real `database_id` returned by D1 create.
+
+5. Generate Cloudflare env types
+
+```bash
+npm run cf-typegen
+```
+
+6. Preview and deploy with CLI
+
+```bash
+npm run preview
+npm run deploy
+```
+
+7. Add required runtime secrets:
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put LASTFM_API_KEY
+npx wrangler secret put LASTFM_API_SECRET
+npx wrangler secret put LASTFM_SESSION_ENCRYPTION_KEY
+npx wrangler secret put QUEUE_PROCESS_SECRET
+```
+
+8. Optional: attach a custom domain and keep route config in source control.
+
+- Dashboard path: Workers & Pages -> `playhead` -> Triggers -> Custom Domains.
+- For apex custom domain (`play-head.com`), keep this in `wrangler.jsonc`:
+
+```jsonc
+"routes": [
+  {
+    "pattern": "play-head.com",
+    "custom_domain": true
+  }
+]
+```
+
+9. Redeploy after secret/route changes:
+
+```bash
+npm run deploy
+```
+
+## D1 migration workflow (Prisma schema -> SQL)
+
+Prisma Migrate is not the source of truth for D1 apply. Use Prisma for SQL generation and Wrangler for apply.
+
+1. Create a migration file:
+
+```bash
+npm run db:d1:migrations:create -- add_initial_schema
+```
+
+2. Generate SQL from Prisma schema and write to that file:
+
+```bash
+npm run db:d1:diff -- migrations/0001_add_initial_schema.sql
+```
+
+3. Apply migrations locally and remotely:
+
+```bash
+npm run db:d1:migrations:apply:local
+npm run db:d1:migrations:apply:remote
+```
+
+4. (Optional) Execute SQL file directly against D1:
+
+```bash
+npm run db:d1:execute:local -- migrations/0001_add_initial_schema.sql
+npm run db:d1:execute:remote -- migrations/0001_add_initial_schema.sql
+```
 
 ## Last.fm connect flow
 
@@ -65,6 +166,7 @@ Primary auth routes:
 ## Streaming run progress
 
 - Analyze and recommend runs now execute asynchronously.
+- Analyze and recommend jobs execute through Cloudflare Queues (`playhead-analyze-jobs`, `playhead-recommend-jobs`) with DLQs configured.
 - Start endpoints:
   - `POST /api/discovery/analyze/start`
   - `POST /api/discovery/recommend/start`
@@ -73,6 +175,14 @@ Primary auth routes:
 - Live SSE stream endpoint:
   - `GET /api/discovery/runs/[runId]/stream`
 - Frontend also polls run status and applies a client-side max wait guard to avoid infinite loading UI.
+- Current production posture: polling is canonical; SSE is best-effort until Phase 4 progress transport hardening is complete.
+
+## Cloudflare status
+
+- Phases 1-3 are implemented and deployed.
+- workers.dev URL: `https://playhead.ataitague.workers.dev`
+- custom domain: `https://play-head.com`
+- Phase 4 (next): make progress transport fully Cloudflare-safe (polling-first canonical path, remove dependency on in-memory fanout semantics).
 
 ## Empty-data behavior
 
@@ -86,6 +196,9 @@ Primary auth routes:
 - `LASTFM_API_KEY`
 - `LASTFM_API_SECRET`
 - `LASTFM_SESSION_ENCRYPTION_KEY` (32-byte key in base64 or 64-char hex)
+- `QUEUE_PROCESS_SECRET` (optional but recommended for `/api/internal/queue/process`)
+
+In Cloudflare, set sensitive values as Worker secrets (CLI: `wrangler secret put <KEY>`).
 
 ## Key API routes
 

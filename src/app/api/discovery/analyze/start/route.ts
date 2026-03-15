@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getUserInfo } from "@/lib/lastfm";
 import { prisma } from "@/server/db";
-import { launchAnalyzeRun } from "@/server/agent/jobs";
 import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -54,17 +54,25 @@ export async function POST(request: Request) {
       },
     });
 
-    void launchAnalyzeRun({
-      runId: run.id,
-      visitorSessionId,
-      userAccountId: userAccount.id,
-      username: targetUsername,
-      targetLastfmUsername: targetUsername,
-      useAccountWeeklyHistory: targetUsername === userAccount.lastfmUsername,
-      preset: payload.preset,
-      from: payload.from,
-      to: payload.to,
-    });
+    const { env } = getCloudflareContext();
+    try {
+      await (env as unknown as { ANALYZE_JOBS: Queue }).ANALYZE_JOBS.send({
+        runId: run.id,
+        mode: "analyze",
+        enqueuedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      await prisma.agentRun.update({
+        where: { id: run.id },
+        data: {
+          status: "failed",
+          errorMessage: error instanceof Error ? error.message : "Failed to queue analyze run.",
+          completedAt: new Date(),
+          terminationReason: "error",
+        },
+      });
+      throw error;
+    }
 
     const response = NextResponse.json({
       ok: true,
