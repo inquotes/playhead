@@ -82,12 +82,31 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
 
 ## Phase 5: History Freshness + Scheduling Alignment
 
-1. Keep recent-tail persistence model (latest snapshot per user):
+Goal: robust backfill completion with early unblock at latest-52-week readiness, while continuing to full-history completion.
+
+1. Complete Option B migration (workflow-native orchestration):
+   - move per-user weekly backfill progression into Cloudflare Workflows steps
+   - keep one active workflow instance per user (`weekly-backfill:<userAccountId>`)
+   - keep legacy dispatcher/watchdog as temporary fallback only during cutover
+2. Eliminate idle gaps in the workflow loop:
+   - continue immediately after productive iterations
+   - sleep/back off only when no progress was made or retry windows apply
+3. Reduce D1 write amplification in weekly processing:
+   - replace per-row write chains with bounded batched write groups where safe
+   - minimize repeated read/write passes per processed week
+4. Keep milestone semantics stable and explicit:
+   - set `recentYearReadyAt` when latest `min(52, discoveredWeeks)` windows are complete
+   - set `fullHistoryReadyAt` when all discovered windows are complete
+   - never clear readiness timestamps on normal enqueue/retrigger
+5. Keep recent-tail persistence model and pull telemetry as canonical:
    - `UserRecentTailState`
    - `UserRecentTailArtistCount`
-2. Keep `UserDataPullLog` as canonical pull-timestamp telemetry source.
-3. Move weekly maintenance execution to Cloudflare-native triggers (cron/queue), including watchdog behavior.
-4. Ensure profile `Update now` orchestration remains supported in Cloudflare deployment path.
+   - `UserDataPullLog`
+6. Ensure profile `Update now` remains trigger-first and reliable in Cloudflare:
+   - enqueue/reuse workflow instance, return quickly, no heavy request-path loops
+7. Add minimal backfill status visibility (API/profile):
+   - workflow state (`running`/`waiting`/`errored`/`complete`)
+   - `weeksProcessed/weeksDiscovered`, readiness timestamps, last error details
 
 ## Phase 6: Resilience + Production Hardening
 

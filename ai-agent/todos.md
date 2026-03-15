@@ -2,9 +2,37 @@
 
 ## Current Focus (Next)
 
-1. Cloudflare scheduling alignment (Phase 5)
+1. Phase 5B: Workflow-native backfill throughput + robustness
 
-- move weekly backfill/watchdog execution to Cloudflare-native triggers (cron/queue)
+- finish Option B migration so Workflows execute weekly backfill steps directly (remove hybrid workflow->dispatcher dependence)
+  - eliminate idle workflow gaps (sleep only on no-progress/retry states)
+  - reduce D1 write amplification in weekly ingestion with bounded batched writes
+  - preserve readiness semantics (`recentYearReadyAt` at latest `min(52, discoveredWeeks)` windows; `fullHistoryReadyAt` at full completion)
+  - add minimal backfill status surface (workflow state + counters + readiness timestamps + last error)
+  - keep legacy dispatcher/watchdog path as short-lived fallback during cutover, then remove
+
+2. Backfill testing + measurement playbook (new)
+
+- create a repeatable test protocol for long-history users (including ~1,100-week account baseline)
+- define exactly how to run tests without waiting for full completion every time (for example: fixed-size week subsets, replay runs, and canary users)
+- add timing instrumentation to capture throughput and latency:
+  - workflow iteration duration
+  - weeks processed per minute/hour
+  - time to `recentYearReadyAt`
+  - time to `fullHistoryReadyAt`
+- add a quick operator script/dashboard query set for before/after comparisons on production data
+- document pass/fail thresholds so optimization PRs can be judged objectively
+
+3. Backfill performance target (new)
+
+- establish a concrete target: most backfills should complete in 5-10 minutes
+- define what "most" means (for example p50/p75 by discovered-week bucket)
+- split targets by milestone:
+  - target time to `recentYearReadyAt`
+  - target time to `fullHistoryReadyAt` for smaller histories
+  - explicit expectation for extreme histories (1,000+ weeks)
+- produce an optimization roadmap tied to these targets (throughput knobs, batching strategy, workflow loop policy)
+
 
 ## Backlog Ideas
 
