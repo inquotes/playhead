@@ -182,6 +182,8 @@ Primary auth routes:
 - Phases 1-4 are implemented and deployed.
 - workers.dev URL: `https://playhead.ataitague.workers.dev`
 - custom domain: `https://play-head.com`
+- Auth callback origin is pinned via `APP_ORIGIN` (`https://play-head.com`) to avoid mixed-protocol OAuth return URLs.
+- For production auth reliability, Cloudflare zone setting **Always Use HTTPS** should be enabled for `play-head.com`.
 - Phase 5 (next): align weekly maintenance scheduling with Cloudflare-native triggers (cron/queue).
 
 ## Empty-data behavior
@@ -196,6 +198,7 @@ Primary auth routes:
 - `LASTFM_API_KEY`
 - `LASTFM_API_SECRET`
 - `LASTFM_SESSION_ENCRYPTION_KEY` (32-byte key in base64 or 64-char hex)
+- `APP_ORIGIN` (canonical public origin used for Last.fm callback URL, ex: `https://play-head.com`)
 - `QUEUE_PROCESS_SECRET` (optional but recommended for `/api/internal/queue/process`)
 
 In Cloudflare, set sensitive values as Worker secrets (CLI: `wrangler secret put <KEY>`).
@@ -205,6 +208,7 @@ In Cloudflare, set sensitive values as Worker secrets (CLI: `wrangler secret put
 - `GET /api/session`
 - `GET /api/auth/lastfm/start`
 - `GET /api/auth/lastfm/callback`
+- `GET|POST /api/auth/lastfm/complete`
 - `GET /api/auth/me`
 - `POST /api/auth/logout`
 - `POST /api/discovery/analyze/start`

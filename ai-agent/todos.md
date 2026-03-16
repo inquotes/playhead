@@ -36,6 +36,10 @@
 
 ## Backlog Ideas
 
+- auth reliability follow-up:
+  - verify Cloudflare **Always Use HTTPS** remains enabled in production
+  - add a lightweight auth regression checklist for mobile (iOS Chrome + Safari)
+  - once stable for multiple days, simplify any temporary auth fallback/bridging logic where safe
 - outbound links expansion on recommendation cards (Apple Music / Spotify when mapping confidence is high)
 - standalone artist pages in-app (instead of routing to Last.fm), including artist-specific recommendation flows to find new recommendations from one selected artist
 - improve saved-artist progress attribution for collaborations and split credits (for example, album/artist strings like "billy woods + Moor Mother").

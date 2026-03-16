@@ -4,10 +4,17 @@ import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session
 export async function GET() {
   try {
     const context = await getOrCreateVisitorSession();
-    const response = NextResponse.json({
-      ok: true,
-      sessionId: context.sessionId,
-    });
+    const response = NextResponse.json(
+      {
+        ok: true,
+        sessionId: context.sessionId,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        },
+      },
+    );
 
     return attachVisitorCookie(response, context);
   } catch (error) {

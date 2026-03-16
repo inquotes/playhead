@@ -76,6 +76,7 @@
     "subrequests": 10000
   },
   "vars": {
-    "PIPELINE_TIMEOUT_MS": "180000"
+    "PIPELINE_TIMEOUT_MS": "180000",
+    "APP_ORIGIN": "https://play-head.com"
   }
 }

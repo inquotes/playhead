@@ -302,8 +302,30 @@ export function DiscoveryApp() {
   useEffect(() => {
     void (async () => {
       try {
-        await jsonFetch<{ ok: true }>("/api/session");
-        const nextStatus = await jsonFetch<ConnectionStatus & { ok: true }>("/api/auth/me");
+        const search = new URLSearchParams(window.location.search);
+        const authConnected = search.get("auth") === "connected";
+
+        await jsonFetch<{ ok: true }>("/api/session", { cache: "no-store" });
+
+        const fetchAuthStatus = async () => {
+          return jsonFetch<ConnectionStatus & { ok: true }>(`/api/auth/me?ts=${Date.now()}`, {
+            cache: "no-store",
+          });
+        };
+
+        let nextStatus = await fetchAuthStatus();
+        if (authConnected && !nextStatus.isAuthenticated) {
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 750);
+            });
+            nextStatus = await fetchAuthStatus();
+            if (nextStatus.isAuthenticated) {
+              break;
+            }
+          }
+        }
+
         setStatus(nextStatus);
 
         if (nextStatus.isAuthenticated) {
@@ -311,11 +333,17 @@ export function DiscoveryApp() {
           setSavedArtists(saved.savedArtists ?? []);
         }
 
-        const search = new URLSearchParams(window.location.search);
         const analysisRunId = search.get("analysisRunId");
         const recommendationRunId = search.get("recommendationRunId");
         if (nextStatus.isAuthenticated && analysisRunId) {
           await hydrateFromHistory(analysisRunId, recommendationRunId);
+        }
+
+        if (authConnected) {
+          search.delete("auth");
+          const nextQuery = search.toString();
+          const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname;
+          window.history.replaceState({}, "", nextUrl);
         }
 
         const authError = search.get("error");

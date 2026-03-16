@@ -67,6 +67,10 @@
   - Phase 3 complete (enqueue-only start endpoints, separate analyze/recommend queues with consumers + DLQs)
   - Phase 4 complete (polling-canonical progress delivery with DB-backed incremental run events)
   - custom domain route configured (`play-head.com`)
+- Mobile auth hardening:
+  - Last.fm callback origin pinned to canonical `APP_ORIGIN` (`https://play-head.com`)
+  - callback now uses a signed completion token + finalize endpoint (`/api/auth/lastfm/complete`)
+  - production should keep Cloudflare **Always Use HTTPS** enabled to prevent mixed-protocol cookie failures
 
 ## Commands
 - `npm run lint`

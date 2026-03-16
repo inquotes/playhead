@@ -3,6 +3,8 @@
 ## Architecture
 - Last.fm REST API is the source of truth for listening and artist metadata (`user.getWeeklyChartList`, `user.getWeeklyArtistChart`, `library.getArtists`, `user.getTopArtists`, `user.getTopTracks`, `user.getRecentTracks`, `artist.getInfo`, `artist.getSimilar`).
 - Auth/account model uses Last.fm Web Auth (`auth.getSession`) with app-side `UserAccount` + `AuthSession` cookies.
+- Auth start now uses canonical `APP_ORIGIN` for callback URL generation to avoid protocol drift on mobile (`/api/auth/lastfm/start` -> `/api/auth/lastfm/callback`).
+- OAuth completion uses a short-lived signed completion token and top-level finalize step (`/api/auth/lastfm/complete`) before redirecting back to app UI.
 - Legacy username-connect/disconnect API flow has been removed (`/api/lastfm/connect/*`, `/api/lastfm/disconnect`).
 - Last.fm integration is centralized in `src/lib/lastfm.ts` (HTTP/retry) and `src/server/lastfm/service.ts` (normalization + DB cache).
 - Discovery pipeline is deterministic in `src/server/discovery/pipeline.ts`; LLM is used only for lane synthesis and recommendation explanations.
@@ -29,6 +31,7 @@
 
 ## Account + History UX
 - Landing is account-aware: unauthenticated users see `Connect Last.fm`; authenticated users see `Get Recommendations`.
+- HTTPS-only entry is required for reliable mobile auth cookies (Cloudflare **Always Use HTTPS** should be enabled for `play-head.com`).
 - Authenticated navigation is global and consistent via shared top-nav pills (`Discovery List`, `Past Recommendations`, `Profile`) with a compact mobile menu.
 - `PLAYHEAD` branding in authenticated headers links back to `/` and replaces a dedicated Home nav pill.
 - Profile IA is first-class and split across `/profile`, `/profile/discovery-list`, and `/profile/past-recommendations`.

@@ -14,18 +14,25 @@ export async function GET() {
       });
     }
 
-    const response = NextResponse.json({
-      ok: true,
-      isAuthenticated: Boolean(user),
-      user: user
-        ? {
-            id: user.id,
-            lastfmUsername: user.lastfmUsername,
-            displayName: user.displayName,
-            avatarUrl: user.avatarUrl,
-          }
-        : null,
-    });
+    const response = NextResponse.json(
+      {
+        ok: true,
+        isAuthenticated: Boolean(user),
+        user: user
+          ? {
+              id: user.id,
+              lastfmUsername: user.lastfmUsername,
+              displayName: user.displayName,
+              avatarUrl: user.avatarUrl,
+            }
+          : null,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        },
+      },
+    );
 
     return attachVisitorCookie(response, visitorContext);
   } catch (error) {

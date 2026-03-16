@@ -9,11 +9,31 @@ function safeNext(value: string | null): string {
   return value;
 }
 
+function getAppOrigin(requestUrl: URL): string {
+  const configured = process.env.APP_ORIGIN?.trim();
+  if (!configured) {
+    return requestUrl.origin;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new Error("APP_ORIGIN must be a valid absolute URL.");
+  }
+
+  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+    throw new Error("APP_ORIGIN must use https in production.");
+  }
+
+  return parsed.origin;
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const next = safeNext(url.searchParams.get("next"));
-    const origin = url.origin;
+    const origin = getAppOrigin(url);
     const state = createAuthStateToken();
     const callback = `${origin}/api/auth/lastfm/callback?next=${encodeURIComponent(next)}&state=${state}`;
 
