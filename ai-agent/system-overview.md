@@ -17,6 +17,8 @@
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
 - Authenticated self-target runs warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) and now refresh a persisted recent-tail snapshot before lane synthesis.
 - Weekly history indexing is job-backed (`UserWeeklyBackfillJob`) with primary dispatch progression and watchdog rescue for stale/retry states.
+- Backfill status is exposed to authenticated app reads via `GET /api/profile/backfill-status` (workflow-style state + counters + readiness + last error).
+- Weekly ingestion write path now batches per-week artist rows (`deleteMany` + `createMany`) and applies rollup deltas transactionally to reduce D1 write amplification.
 - Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.
 - Recent-tail invalid windows now no-op and keep the previous stored snapshot (prevents accidental tail wipe/regression in profile progress counters).
 - Pull recency telemetry is persisted in `UserDataPullLog` for both weekly backfill and recent-tail pulls; profile "Data Last Updated" reads from this table.

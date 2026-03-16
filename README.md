@@ -216,5 +216,6 @@ In Cloudflare, set sensitive values as Worker secrets (CLI: `wrangler secret put
 - `GET /api/discovery/runs/[runId]`
 - `GET /api/discovery/runs/[runId]/stream`
 - `GET /api/history/analysis/[analysisRunId]`
+- `GET /api/profile/backfill-status`
 
 Account auth is fully Last.fm Web Auth + app-side session based; legacy username-connect routes have been removed.

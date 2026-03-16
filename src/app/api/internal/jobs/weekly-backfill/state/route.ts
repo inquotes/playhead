@@ -60,8 +60,19 @@ export async function GET(request: Request) {
     }
 
     const terminal = Boolean(state.fullHistoryReadyAt) || job?.status === "complete" || job?.status === "failed_permanent";
+
+    const workflowState: "running" | "waiting" | "errored" | "complete" =
+      job?.status === "failed_permanent"
+        ? "errored"
+        : job?.status === "complete" || Boolean(state.fullHistoryReadyAt)
+          ? "complete"
+          : job?.status === "running"
+            ? "running"
+            : "waiting";
+
     return NextResponse.json({
       ok: true,
+      workflowState,
       state: {
         status: state.status,
         weeksDiscovered: state.weeksDiscovered,

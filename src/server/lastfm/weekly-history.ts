@@ -211,6 +211,19 @@ async function processSingleWeek(params: {
     const payload = await getWeeklyArtistChart({ user: username, from: week.from, to: week.to });
     const rows = parseWeeklyArtistChart(payload);
 
+    const incomingByArtist = new Map<string, { artistName: string; normalizedName: string; playcount: number }>();
+    for (const row of rows) {
+      const existing = incomingByArtist.get(row.normalizedName);
+      if (existing) {
+        existing.playcount += row.playcount;
+        existing.artistName = row.artistName;
+      } else {
+        incomingByArtist.set(row.normalizedName, { ...row });
+      }
+    }
+
+    const incomingRows = [...incomingByArtist.values()];
+
     const existingRows = await prisma.userWeeklyArtistPlaycount.findMany({
       where: {
         userAccountId,
@@ -218,87 +231,161 @@ async function processSingleWeek(params: {
         weekEnd: week.to,
       },
       select: {
+        artistName: true,
         normalizedName: true,
         playcount: true,
       },
     });
 
-    const existingByArtist = new Map(existingRows.map((row) => [row.normalizedName, row.playcount]));
+    const existingByArtist = new Map(existingRows.map((row) => [row.normalizedName, row]));
 
-    for (const row of rows) {
-      const previous = existingByArtist.get(row.normalizedName) ?? 0;
+    const deltaByArtist = new Map<string, { artistName: string; normalizedName: string; delta: number }>();
+    for (const row of incomingRows) {
+      const previous = existingByArtist.get(row.normalizedName)?.playcount ?? 0;
       const delta = row.playcount - previous;
+      if (delta !== 0) {
+        deltaByArtist.set(row.normalizedName, {
+          artistName: row.artistName,
+          normalizedName: row.normalizedName,
+          delta,
+        });
+      }
+    }
 
-      await prisma.userWeeklyArtistPlaycount.upsert({
-        where: {
-          userAccountId_weekStart_weekEnd_normalizedName: {
+    for (const row of existingRows) {
+      if (incomingByArtist.has(row.normalizedName)) {
+        continue;
+      }
+      if (row.playcount !== 0) {
+        deltaByArtist.set(row.normalizedName, {
+          artistName: row.artistName,
+          normalizedName: row.normalizedName,
+          delta: -row.playcount,
+        });
+      }
+    }
+
+    const hasWeeklyChanges =
+      incomingRows.length !== existingRows.length
+      || incomingRows.some((row) => {
+        const existing = existingByArtist.get(row.normalizedName);
+        return !existing || existing.playcount !== row.playcount || existing.artistName !== row.artistName;
+      });
+
+    await prisma.$transaction(async (tx) => {
+      if (hasWeeklyChanges) {
+        await tx.userWeeklyArtistPlaycount.deleteMany({
+          where: {
             userAccountId,
             weekStart: week.from,
             weekEnd: week.to,
-            normalizedName: row.normalizedName,
+          },
+        });
+
+        if (incomingRows.length > 0) {
+          await tx.userWeeklyArtistPlaycount.createMany({
+            data: incomingRows.map((row) => ({
+              userAccountId,
+              weekStart: week.from,
+              weekEnd: week.to,
+              artistName: row.artistName,
+              normalizedName: row.normalizedName,
+              playcount: row.playcount,
+            })),
+          });
+        }
+      }
+
+      if (deltaByArtist.size > 0) {
+        const normalizedNames = [...deltaByArtist.keys()];
+        const existingRollups = await tx.userKnownArtistRollup.findMany({
+          where: {
+            userAccountId,
+            normalizedName: { in: normalizedNames },
+          },
+          select: {
+            normalizedName: true,
+            playcount: true,
+          },
+        });
+
+        const existingRollupByArtist = new Map(existingRollups.map((row) => [row.normalizedName, row.playcount]));
+
+        const rollupsToCreate: Array<{ userAccountId: string; artistName: string; normalizedName: string; playcount: number }> = [];
+        const rollupsToUpdate: Array<{ artistName: string; normalizedName: string; playcount: number }> = [];
+
+        for (const row of deltaByArtist.values()) {
+          const current = existingRollupByArtist.get(row.normalizedName);
+          if (current == null) {
+            if (row.delta > 0) {
+              rollupsToCreate.push({
+                userAccountId,
+                artistName: row.artistName,
+                normalizedName: row.normalizedName,
+                playcount: row.delta,
+              });
+            }
+            continue;
+          }
+
+          const nextPlaycount = Math.max(0, current + row.delta);
+          if (nextPlaycount !== current || row.delta !== 0) {
+            rollupsToUpdate.push({
+              artistName: row.artistName,
+              normalizedName: row.normalizedName,
+              playcount: nextPlaycount,
+            });
+          }
+        }
+
+        if (rollupsToCreate.length > 0) {
+          await tx.userKnownArtistRollup.createMany({
+            data: rollupsToCreate,
+          });
+        }
+
+        for (const row of rollupsToUpdate) {
+          await tx.userKnownArtistRollup.update({
+            where: {
+              userAccountId_normalizedName: {
+                userAccountId,
+                normalizedName: row.normalizedName,
+              },
+            },
+            data: {
+              artistName: row.artistName,
+              playcount: row.playcount,
+            },
+          });
+        }
+      }
+
+      await tx.userWeeklyIngestedWeek.upsert({
+        where: {
+          userAccountId_weekStart_weekEnd: {
+            userAccountId,
+            weekStart: week.from,
+            weekEnd: week.to,
           },
         },
         create: {
           userAccountId,
           weekStart: week.from,
           weekEnd: week.to,
-          artistName: row.artistName,
-          normalizedName: row.normalizedName,
-          playcount: row.playcount,
+          status: "done",
+          artistCount: incomingRows.length,
+          attemptCount: 1,
+          lastAttemptAt: new Date(),
+          lastErrorMessage: null,
         },
         update: {
-          artistName: row.artistName,
-          playcount: row.playcount,
+          status: "done",
+          artistCount: incomingRows.length,
+          attemptCount: { increment: 1 },
+          lastAttemptAt: new Date(),
+          lastErrorMessage: null,
         },
       });
-
-      if (delta !== 0) {
-        await prisma.userKnownArtistRollup.upsert({
-          where: {
-            userAccountId_normalizedName: {
-              userAccountId,
-              normalizedName: row.normalizedName,
-            },
-          },
-          create: {
-            userAccountId,
-            artistName: row.artistName,
-            normalizedName: row.normalizedName,
-            playcount: Math.max(0, delta),
-          },
-          update: {
-            artistName: row.artistName,
-            playcount: { increment: delta },
-          },
-        });
-      }
-    }
-
-    await prisma.userWeeklyIngestedWeek.upsert({
-      where: {
-        userAccountId_weekStart_weekEnd: {
-          userAccountId,
-          weekStart: week.from,
-          weekEnd: week.to,
-        },
-      },
-      create: {
-        userAccountId,
-        weekStart: week.from,
-        weekEnd: week.to,
-        status: "done",
-        artistCount: rows.length,
-        attemptCount: 1,
-        lastAttemptAt: new Date(),
-        lastErrorMessage: null,
-      },
-      update: {
-        status: "done",
-        artistCount: rows.length,
-        attemptCount: { increment: 1 },
-        lastAttemptAt: new Date(),
-        lastErrorMessage: null,
-      },
     });
 
     return true;
@@ -581,6 +668,45 @@ export async function runWeeklyBackfillDispatcher(params?: {
   }
 
   return { processed };
+}
+
+export async function processWeeklyBackfillForUser(params: {
+  userAccountId: string;
+}): Promise<{ processed: number; reason?: "missing" | "terminal" | "not_ready" | "locked" }> {
+  const job = await prisma.userWeeklyBackfillJob.findUnique({
+    where: { userAccountId: params.userAccountId },
+    select: {
+      userAccountId: true,
+      lastfmUsername: true,
+      status: true,
+      nextRunAt: true,
+    },
+  });
+
+  if (!job) {
+    return { processed: 0, reason: "missing" };
+  }
+
+  if (job.status === "complete" || job.status === "failed_permanent") {
+    return { processed: 0, reason: "terminal" };
+  }
+
+  if ((job.status === "queued" || job.status === "retry_wait") && job.nextRunAt && job.nextRunAt.getTime() > Date.now()) {
+    return { processed: 0, reason: "not_ready" };
+  }
+
+  const lockToken = await claimJob({ userAccountId: job.userAccountId, status: job.status });
+  if (!lockToken) {
+    return { processed: 0, reason: "locked" };
+  }
+
+  await runClaimedJob({
+    userAccountId: job.userAccountId,
+    username: job.lastfmUsername,
+    lockToken,
+  });
+
+  return { processed: 1 };
 }
 
 async function driveBackfillPrimary(params: { userAccountId: string; username: string }): Promise<void> {

@@ -64,7 +64,16 @@ type WeeklyStateResponse = {
   };
   job?: {
     status: string;
+    nextRunAt?: string | null;
   } | null;
+  workflowState?: "running" | "waiting" | "errored" | "complete";
+  message?: string;
+};
+
+type WeeklyRunResponse = {
+  ok: boolean;
+  processed?: number;
+  reason?: "missing" | "terminal" | "not_ready" | "locked";
   message?: string;
 };
 
@@ -248,7 +257,7 @@ export class WeeklyBackfillWorkflow extends WorkflowEntrypoint<QueueEnv, WeeklyB
     );
 
     for (let iteration = 0; iteration < WORKFLOW_MAX_ITERATIONS; iteration += 1) {
-      await step.do(
+      const runResult = await step.do(
         `run-dispatch-${iteration}`,
         {
           retries: { limit: 3, delay: "4 seconds", backoff: "linear" },
@@ -267,9 +276,13 @@ export class WeeklyBackfillWorkflow extends WorkflowEntrypoint<QueueEnv, WeeklyB
             throw new Error(`Dispatcher run failed with status ${response.status}.`);
           }
 
-          return { dispatched: true };
+          return (await response.json()) as WeeklyRunResponse;
         },
       );
+
+      if (!runResult.ok) {
+        throw new Error(runResult.message ?? "Backfill run step failed.");
+      }
 
       const state = await step.do(
         `read-state-${iteration}`,
@@ -311,7 +324,16 @@ export class WeeklyBackfillWorkflow extends WorkflowEntrypoint<QueueEnv, WeeklyB
         };
       }
 
-      await step.sleep(`wait-before-next-iteration-${iteration}`, `${WORKFLOW_SLEEP_SECONDS} seconds`);
+      if ((runResult.processed ?? 0) > 0 && state.workflowState === "running") {
+        continue;
+      }
+
+      const nextRunAtMs = state.job?.nextRunAt ? new Date(state.job.nextRunAt).getTime() : NaN;
+      const waitSeconds = Number.isFinite(nextRunAtMs)
+        ? Math.max(1, Math.min(60, Math.ceil((nextRunAtMs - Date.now()) / 1000)))
+        : WORKFLOW_SLEEP_SECONDS;
+
+      await step.sleep(`wait-before-next-iteration-${iteration}`, `${waitSeconds} seconds`);
     }
 
     throw new Error("Backfill workflow exceeded iteration budget before completion.");

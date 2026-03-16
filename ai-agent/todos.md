@@ -11,6 +11,12 @@
   - add minimal backfill status surface (workflow state + counters + readiness timestamps + last error)
   - keep legacy dispatcher/watchdog path as short-lived fallback during cutover, then remove
 
+Progress update:
+- workflow loop now skips idle sleep after productive iterations and waits to `nextRunAt` for retry/no-progress windows.
+- per-user workflow run path now uses direct `processWeeklyBackfillForUser` claim/execute path (dispatcher remains for broad/fallback sweeps).
+- minimal status surface is now exposed at `GET /api/profile/backfill-status` and includes `workflowState`, counters, readiness timestamps, and last error details.
+- weekly ingestion now replaces per-row week upserts with delete+createMany batches and applies rollup deltas in one transactional pass.
+
 2. Backfill testing + measurement playbook (new)
 
 - create a repeatable test protocol for long-history users (including ~1,100-week account baseline)

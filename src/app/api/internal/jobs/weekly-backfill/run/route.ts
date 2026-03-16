@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { runWeeklyBackfillDispatcher } from "@/server/lastfm/weekly-history";
+import { processWeeklyBackfillForUser, runWeeklyBackfillDispatcher } from "@/server/lastfm/weekly-history";
 
 const bodySchema = z.object({
   limit: z.number().int().min(1).max(50).optional(),
@@ -25,10 +25,11 @@ export async function POST(request: Request) {
 
     const parsed = bodySchema.safeParse(await request.json().catch(() => ({})));
     const payload = parsed.success ? parsed.data : {};
-    const result = await runWeeklyBackfillDispatcher({
-      limit: payload.limit ?? 10,
-      userAccountId: payload.userAccountId,
-    });
+    const result = payload.userAccountId
+      ? await processWeeklyBackfillForUser({ userAccountId: payload.userAccountId })
+      : await runWeeklyBackfillDispatcher({
+          limit: payload.limit ?? 10,
+        });
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Backfill runner failed.";
