@@ -20,7 +20,7 @@
 - Recommend should use lane context from analysis + known-history scan.
 - Self-target known-history scans should prefer persisted weekly history + rollup, with a short readiness wait and partial-coverage fallback.
 - Recent-tail refresh should never wipe stored tail data on invalid windows (`to < from`); invalid windows no-op and keep prior snapshot.
-- Weekly backfill should progress via primary dispatch path; watchdog is rescue-only for stale/failed states.
+- Weekly backfill should progress via workflow-native per-user orchestration; watchdog is rescue-only for stale/failed states.
 - Persist one recommendation run per lane per analysis; refresh replaces prior lane result.
 - If selected analysis window has no listening history, return empty lanes with explicit no-history messaging.
 - If selected lane has no seed data, return empty recommendations quickly (no long-running expansion).
@@ -40,9 +40,10 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Cloudflare deploy-readiness Phase 1-4 is complete and deployed.
-- Next feature: Cloudflare Phase 5 scheduling alignment (move weekly maintenance to Cloudflare-native triggers).
-- Then: production hardening/observability and cost tuning.
+- Cloudflare deploy-readiness Phase 1-5 is complete and deployed.
+- Next feature: Phase 6 resilience hardening.
+- Then: production observability and cost tuning.
+- Readiness-semantics tightening and benchmark target instrumentation are deferred backlog items.
 
 ## Recent Completed Work
 - Data/API cleanup: removed legacy username-connect endpoints and dropped `LastfmConnection` schema model.
@@ -71,6 +72,10 @@
   - Last.fm callback origin pinned to canonical `APP_ORIGIN` (`https://play-head.com`)
   - callback now uses a signed completion token + finalize endpoint (`/api/auth/lastfm/complete`)
   - production should keep Cloudflare **Always Use HTTPS** enabled to prevent mixed-protocol cookie failures
+- Phase 5 scheduling alignment complete:
+  - weekly maintenance progression is workflow-native for normal paths
+  - workflow loop skips idle waits after productive iterations
+  - backfill status exposed at `GET /api/profile/backfill-status`
 
 ## Commands
 - `npm run lint`

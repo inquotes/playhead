@@ -2,22 +2,16 @@
 
 ## Current Focus (Next)
 
-1. Phase 5B: Workflow-native backfill throughput + robustness
+1. Phase 6 kickoff: resilience hardening
 
-- finish Option B migration so Workflows execute weekly backfill steps directly (remove hybrid workflow->dispatcher dependence)
-  - eliminate idle workflow gaps (sleep only on no-progress/retry states)
-  - reduce D1 write amplification in weekly ingestion with bounded batched writes
-  - preserve readiness semantics (`recentYearReadyAt` at latest `min(52, discoveredWeeks)` windows; `fullHistoryReadyAt` at full completion)
-  - add minimal backfill status surface (workflow state + counters + readiness timestamps + last error)
-  - keep legacy dispatcher/watchdog path as short-lived fallback during cutover, then remove
+- add cancellation endpoint for queued/running discovery runs
+- add stale-run sweeper for orphaned `running` runs
+- add duplicate-run prevention + basic per-user rate limits
 
-Progress update:
-- workflow loop now skips idle sleep after productive iterations and waits to `nextRunAt` for retry/no-progress windows.
-- per-user workflow run path now uses direct `processWeeklyBackfillForUser` claim/execute path (dispatcher remains for broad/fallback sweeps).
-- minimal status surface is now exposed at `GET /api/profile/backfill-status` and includes `workflowState`, counters, readiness timestamps, and last error details.
-- weekly ingestion now replaces per-row week upserts with delete+createMany batches and applies rollup deltas in one transactional pass.
+2. Deferred from Phase 5 (backlog-priority)
 
-2. Backfill testing + measurement playbook (new)
+- readiness semantics hardening (`recentYearReadyAt`/`fullHistoryReadyAt` strictness under retrigger/retry)
+- backfill testing + measurement playbook
 
 - create a repeatable test protocol for long-history users (including ~1,100-week account baseline)
 - define exactly how to run tests without waiting for full completion every time (for example: fixed-size week subsets, replay runs, and canary users)
@@ -29,7 +23,7 @@ Progress update:
 - add a quick operator script/dashboard query set for before/after comparisons on production data
 - document pass/fail thresholds so optimization PRs can be judged objectively
 
-3. Backfill performance target (new)
+3. Deferred from Phase 5 (backlog-priority)
 
 - establish a concrete target: most backfills should complete in 5-10 minutes
 - define what "most" means (for example p50/p75 by discovered-week bucket)

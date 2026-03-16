@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getWeeklyArtistChart, getWeeklyChartList } from "@/lib/lastfm";
 import { prisma } from "@/server/db";
 import { recordDataPull } from "@/server/lastfm/data-pulls";
@@ -13,9 +14,8 @@ const LOCK_TTL_MS = 120_000;
 const POLL_INTERVAL_MS = 1_000;
 const RETRY_BASE_MS = 60_000;
 const MAX_CONSECUTIVE_FAILURES = 8;
-const PRIMARY_IDLE_WAIT_MS = 500;
 
-const activePrimaryDrivers = new Set<string>();
+type WorkflowTrigger = "update_now" | "recent_year_gate" | "watchdog" | "other";
 
 function normalizeArtistName(value: string): string {
   return value.trim().toLowerCase();
@@ -709,47 +709,61 @@ export async function processWeeklyBackfillForUser(params: {
   return { processed: 1 };
 }
 
-async function driveBackfillPrimary(params: { userAccountId: string; username: string }): Promise<void> {
-  if (activePrimaryDrivers.has(params.userAccountId)) {
-    return;
-  }
-
-  activePrimaryDrivers.add(params.userAccountId);
+async function triggerBackfillWorkflow(params: {
+  userAccountId: string;
+  username: string;
+  trigger?: WorkflowTrigger;
+}): Promise<boolean> {
   try {
-    while (true) {
-      await runWeeklyBackfillDispatcher({
-        limit: 1,
-        userAccountId: params.userAccountId,
-      });
+    const { env } = getCloudflareContext();
+    const runtime = env as unknown as {
+      WORKER_SELF_REFERENCE?: { fetch: (request: Request) => Promise<Response> };
+      BACKFILL_WORKFLOW_TRIGGER_SECRET?: string;
+    };
 
-      const job = await prisma.userWeeklyBackfillJob.findUnique({
-        where: { userAccountId: params.userAccountId },
-        select: { status: true, nextRunAt: true },
-      });
-
-      if (!job || job.status === "complete" || job.status === "failed_permanent" || job.status === "retry_wait") {
-        return;
-      }
-
-      if (job.status === "queued") {
-        const delayMs = Math.max(0, (job.nextRunAt?.getTime() ?? Date.now()) - Date.now());
-        if (delayMs > 0) {
-          await sleep(Math.min(delayMs, PRIMARY_IDLE_WAIT_MS));
-        }
-        continue;
-      }
-
-      return;
+    if (!runtime.WORKER_SELF_REFERENCE?.fetch) {
+      return false;
     }
-  } finally {
-    activePrimaryDrivers.delete(params.userAccountId);
+
+    const response = await runtime.WORKER_SELF_REFERENCE.fetch(
+      new Request("https://internal/__internal/workflows/weekly-backfill/trigger", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(runtime.BACKFILL_WORKFLOW_TRIGGER_SECRET
+            ? { "x-workflow-trigger-secret": runtime.BACKFILL_WORKFLOW_TRIGGER_SECRET }
+            : {}),
+        },
+        body: JSON.stringify({
+          userAccountId: params.userAccountId,
+          username: params.username,
+          trigger: params.trigger ?? "other",
+        }),
+      }),
+    );
+
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
 export function ensureWeeklyHistoryInBackground(params: { userAccountId: string; username: string }): void {
   void (async () => {
     await enqueueJob({ userAccountId: params.userAccountId, username: params.username, priority: 200 });
-    await driveBackfillPrimary({ userAccountId: params.userAccountId, username: params.username });
+
+    const triggered = await triggerBackfillWorkflow({
+      userAccountId: params.userAccountId,
+      username: params.username,
+      trigger: "other",
+    });
+
+    if (!triggered) {
+      await runWeeklyBackfillDispatcher({
+        limit: 1,
+        userAccountId: params.userAccountId,
+      });
+    }
   })();
 }
 
@@ -786,10 +800,19 @@ export async function runWeeklyHistoryWatchdog(params?: { limit?: number }): Pro
 
   let kicked = 0;
   for (const target of targets) {
-    await driveBackfillPrimary({
+    const triggered = await triggerBackfillWorkflow({
       userAccountId: target.userAccountId,
       username: target.lastfmUsername,
+      trigger: "watchdog",
     });
+
+    if (!triggered) {
+      await runWeeklyBackfillDispatcher({
+        limit: 1,
+        userAccountId: target.userAccountId,
+      });
+    }
+
     kicked += 1;
   }
   return { rescued, kicked };

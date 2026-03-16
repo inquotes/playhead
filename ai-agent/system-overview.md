@@ -9,14 +9,15 @@
 - Last.fm integration is centralized in `src/lib/lastfm.ts` (HTTP/retry) and `src/server/lastfm/service.ts` (normalization + DB cache).
 - Discovery pipeline is deterministic in `src/server/discovery/pipeline.ts`; LLM is used only for lane synthesis and recommendation explanations.
 - Async UX remains run-based (`AgentRun`, `AgentRunEvent`) with polling-canonical progress reads while final outputs are persisted in `AnalysisRun` and `RecommendationRun`.
-- Cloudflare deploy-readiness Phases 1-4 are complete (Workers runtime + D1 adapter/migrations + queue-backed analyze/recommend execution + polling-canonical progress delivery).
+- Cloudflare deploy-readiness Phases 1-5 are complete (Workers runtime + D1 adapter/migrations + queue-backed analyze/recommend execution + polling-canonical progress delivery + workflow-native weekly maintenance).
+- Readiness-semantics hardening and benchmark-target instrumentation are intentionally deferred to backlog after Phase 5 closeout.
 - Expensive Last.fm responses are cached in `LastfmApiCache`.
 
 ## Core Runtime Model
 - Analyze step builds a `ListeningSnapshot`; if no in-window listening is found, it persists an empty-lane analysis with explicit no-history summary.
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
 - Authenticated self-target runs warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) and now refresh a persisted recent-tail snapshot before lane synthesis.
-- Weekly history indexing is job-backed (`UserWeeklyBackfillJob`) with primary dispatch progression and watchdog rescue for stale/retry states.
+- Weekly history indexing is workflow-native per user (`WeeklyBackfillWorkflow` + `UserWeeklyBackfillJob`) with watchdog rescue for stale/retry states.
 - Backfill status is exposed to authenticated app reads via `GET /api/profile/backfill-status` (workflow-style state + counters + readiness + last error).
 - Weekly ingestion write path now batches per-week artist rows (`deleteMany` + `createMany`) and applies rollup deltas transactionally to reduce D1 write amplification.
 - Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.

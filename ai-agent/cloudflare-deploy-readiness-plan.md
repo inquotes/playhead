@@ -20,6 +20,12 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
   - polling is the canonical progress transport for discovery runs
   - run status API supports incremental DB-backed event reads (`sinceSeq`)
   - production UX no longer depends on in-memory fanout semantics
+- Phase 5 complete (scoped):
+  - per-user weekly backfill progression is workflow-native in normal paths
+  - workflow loop avoids idle waits after productive iterations
+  - weekly ingestion uses batched week writes + transactional rollup delta updates
+  - profile-readable backfill status endpoint is available (`GET /api/profile/backfill-status`)
+  - readiness-semantics hardening and benchmark/threshold instrumentation intentionally deferred to backlog
 - Deployment status:
   - workers.dev live
   - custom domain route configured (`play-head.com`)
