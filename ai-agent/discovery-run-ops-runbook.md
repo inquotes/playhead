@@ -4,7 +4,7 @@ This runbook is the minimal operator path for discovery run health on Cloudflare
 
 ## Scheduled Guardrail
 
-- Cron: every 10 minutes (`*/10 * * * *`)
+- Cron: every 20 minutes at minute `0,20,40` (`0,20,40 * * * *`)
 - Action: call `POST /api/internal/jobs/discovery-runs/stale-sweeper`
 - Purpose: fail orphaned `running` or `cancel_requested` runs that exceeded the stale threshold
 

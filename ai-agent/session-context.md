@@ -40,9 +40,9 @@
 
 ## Current Roadmap Focus
 - Latency pass is stabilized for now (nano + low effort + benchmark path in place).
-- Cloudflare deploy-readiness Phase 1-5 is complete and deployed.
-- Next feature: Phase 6 resilience hardening.
-- Then: production observability and cost tuning.
+- Cloudflare deploy-readiness Phases 1-7 are complete (scoped/minimal for 6-7) and deployed.
+- Discovery run operations now use a lightweight runbook path (`ai-agent/discovery-run-ops-runbook.md`) instead of dashboard/alerting scope.
+- Product-facing focus is backlog UX/data-quality improvements, not additional Cloudflare platform work.
 - Readiness-semantics tightening and benchmark target instrumentation are deferred backlog items.
 
 ## Recent Completed Work
@@ -76,6 +76,11 @@
   - weekly maintenance progression is workflow-native for normal paths
   - workflow loop skips idle waits after productive iterations
   - backfill status exposed at `GET /api/profile/backfill-status`
+- Phase 6/7 scoped closeout complete:
+  - cancellation endpoint: `POST /api/discovery/runs/[runId]/cancel`
+  - stale discovery run sweeper endpoint + cron schedule (`0,20,40 * * * *`)
+  - duplicate-run prevention + basic per-user start rate limiting on analyze/recommend starts
+  - lightweight ops runbook and one-command smoke check (`npm run ops:discovery-smoke`)
 
 ## Commands
 - `npm run lint`

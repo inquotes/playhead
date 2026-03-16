@@ -1,12 +1,5 @@
 # AI Agent TODOs
 
-## Active Now
-
-### Phase 6: Resilience Hardening
-- [x] Add cancellation endpoint for queued/running discovery runs.
-- [x] Add stale-run sweeper for orphaned `running` runs.
-- [x] Add duplicate-run prevention and basic per-user rate limits.
-
 ## Backlog
 
 ### Discovery + Recommendation UX
@@ -35,7 +28,7 @@
 - [ ] Improve saved-artist progress attribution for collaborations and split credits (for example, "billy woods + Moor Mother").
 - [ ] Consider alias/identity-aware matching so "plays since saved" credits intended artists and recommended albums more accurately.
 
-### Backfill Testing and TIming
+### Backfill Testing and Timing
 
 #### Backfill Correctness + Measurement
 - [ ] Tighten readiness semantics (`recentYearReadyAt`/`fullHistoryReadyAt`) under retrigger/retry.

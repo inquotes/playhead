@@ -51,7 +51,7 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
 - Next.js app deployed to Cloudflare runtime
 - D1 as the relational store for app data and run/event state
 - Queue workers for analyze/recommend background execution
-- Cron-driven maintenance for weekly history/backfill/watchdog
+- Cron-driven maintenance for weekly history/backfill/watchdog and discovery stale-run sweeping
 - Optional later: Durable Object push fanout, R2 for large artifacts
 
 ## Phase 1: Runtime + Bindings Foundation
@@ -135,7 +135,7 @@ Goal: robust backfill completion with early unblock at latest-52-week readiness,
 2. Skip dedicated dashboard UI and skip alerting for this scope.
 3. Keep cost tuning minimal and opportunistic only (no dedicated optimization project).
 
-## Suggested Rollout Order
+## Rollout Order Used
 
 1. Phase 5 (history freshness + scheduling)
 2. Phase 6 + Phase 7 (hardening and optimization)

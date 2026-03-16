@@ -9,7 +9,7 @@
 - Last.fm integration is centralized in `src/lib/lastfm.ts` (HTTP/retry) and `src/server/lastfm/service.ts` (normalization + DB cache).
 - Discovery pipeline is deterministic in `src/server/discovery/pipeline.ts`; LLM is used only for lane synthesis and recommendation explanations.
 - Async UX remains run-based (`AgentRun`, `AgentRunEvent`) with polling-canonical progress reads while final outputs are persisted in `AnalysisRun` and `RecommendationRun`.
-- Cloudflare deploy-readiness Phases 1-5 are complete (Workers runtime + D1 adapter/migrations + queue-backed analyze/recommend execution + polling-canonical progress delivery + workflow-native weekly maintenance).
+- Cloudflare deploy-readiness Phases 1-7 are complete (scoped/minimal for 6-7): Workers runtime + D1 adapter/migrations + queue-backed analyze/recommend execution + polling-canonical progress delivery + workflow-native weekly maintenance + run cancellation/stale-run safeguards + lightweight ops runbook.
 - Readiness-semantics hardening and benchmark-target instrumentation are intentionally deferred to backlog after Phase 5 closeout.
 - Expensive Last.fm responses are cached in `LastfmApiCache`.
 
@@ -47,23 +47,30 @@
 ## Request Flows
 
 ### Analyze (`POST /api/discovery/analyze/start`)
-1. Create `AgentRun` with `queued` status and enqueue work to Cloudflare analyze queue.
-2. Build listening snapshot from Last.fm weekly chart aggregation + artist profile enrichment.
-3. If snapshot has no in-window artists, persist an empty-lane analysis with a no-history summary.
-4. Otherwise generate 3 lanes via strict JSON schema.
-5. Attach bounded similar-artist hints per lane.
-6. Persist lanes and trace metadata to `AnalysisRun` and run result, including `targetLastfmUsername`.
+1. Apply start guards (duplicate active-run prevention + lightweight per-user rate limit).
+2. Create `AgentRun` with `queued` status and enqueue work to Cloudflare analyze queue.
+3. Build listening snapshot from Last.fm weekly chart aggregation + artist profile enrichment.
+4. If snapshot has no in-window artists, persist an empty-lane analysis with a no-history summary.
+5. Otherwise generate 3 lanes via strict JSON schema.
+6. Attach bounded similar-artist hints per lane.
+7. Persist lanes and trace metadata to `AnalysisRun` and run result, including `targetLastfmUsername`.
 
 ### Recommend (`POST /api/discovery/recommend/start`)
-1. Create `AgentRun` with `queued` status and enqueue work to Cloudflare recommend queue.
-2. Load selected lane context from `AnalysisRun`.
-3. Load known artist history for new-to-you filtering.
-4. If lane has no seed data, complete with empty recommendations and a clear strategy note.
-5. Otherwise expand candidates from lane similar-hints + fresh similar-artist calls.
-6. Deterministically dedupe, filter, rank, and return top 4.
-7. Generate concise editorial blurbs with LLM, grounded in tags/bio context.
-8. Attach top album suggestion per selected artist using Last.fm `artist.getTopAlbums`.
-9. Persist a single recommendation record per lane per analysis (refresh replaces prior lane record).
+1. Apply start guards (duplicate active-run prevention + lightweight per-user rate limit).
+2. Create `AgentRun` with `queued` status and enqueue work to Cloudflare recommend queue.
+3. Load selected lane context from `AnalysisRun`.
+4. Load known artist history for new-to-you filtering.
+5. If lane has no seed data, complete with empty recommendations and a clear strategy note.
+6. Otherwise expand candidates from lane similar-hints + fresh similar-artist calls.
+7. Deterministically dedupe, filter, rank, and return top 4.
+8. Generate concise editorial blurbs with LLM, grounded in tags/bio context.
+9. Attach top album suggestion per selected artist using Last.fm `artist.getTopAlbums`.
+10. Persist a single recommendation record per lane per analysis (refresh replaces prior lane record).
+
+### Run Operations
+- `POST /api/discovery/runs/[runId]/cancel` supports queued cancellation and cooperative cancellation for running jobs.
+- `POST /api/internal/jobs/discovery-runs/stale-sweeper` marks orphaned active runs as failed after threshold age.
+- Cloudflare cron trigger runs stale sweeper at `0,20,40 * * * *`.
 
 ## LLM Boundary
 - LLM is allowed to:
