@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { prisma } from "@/server/db";
+import { guardDiscoveryRunStart } from "@/server/agent/jobs";
 import type { Lane } from "@/server/discovery/types";
 import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
@@ -42,6 +43,26 @@ export async function POST(request: Request) {
 
     if (!selectedLane) {
       const response = NextResponse.json({ ok: false, message: "Lane not found." }, { status: 404 });
+      return attachVisitorCookie(response, context);
+    }
+
+    const startGuard = await guardDiscoveryRunStart({
+      userAccountId: userAccount.id,
+      mode: "recommend",
+    });
+
+    if (!startGuard.ok) {
+      const response = NextResponse.json(
+        {
+          ok: false,
+          reason: startGuard.reason,
+          message: startGuard.message,
+          activeRunId: startGuard.activeRunId,
+          activeRunStatus: startGuard.activeRunStatus,
+          retryAfterSeconds: startGuard.retryAfterSeconds,
+        },
+        { status: startGuard.reason === "rate_limited" ? 429 : 409 },
+      );
       return attachVisitorCookie(response, context);
     }
 

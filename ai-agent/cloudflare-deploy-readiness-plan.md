@@ -26,6 +26,13 @@ This document captures the Cloudflare-native, single-vendor deployment plan for 
   - weekly ingestion uses batched week writes + transactional rollup delta updates
   - profile-readable backfill status endpoint is available (`GET /api/profile/backfill-status`)
   - readiness-semantics hardening and benchmark/threshold instrumentation intentionally deferred to backlog
+- Phase 6 complete (scoped):
+  - cancellation endpoint for queued/running discovery runs (`POST /api/discovery/runs/[runId]/cancel`)
+  - stale-run sweeper endpoint and cron-driven execution for orphaned active runs
+  - duplicate-run guard + basic per-user start rate limiting on analyze/recommend start endpoints
+- Phase 7 complete (minimal):
+  - lightweight operations runbook with manual checks and saved D1 query set (`ai-agent/discovery-run-ops-runbook.md`)
+  - no dedicated product UI dashboard, no alerting layer
 - Deployment status:
   - workers.dev live
   - custom domain route configured (`play-head.com`)
@@ -116,18 +123,17 @@ Goal: robust backfill completion with early unblock at latest-52-week readiness,
 
 ## Phase 6: Resilience + Production Hardening
 
-1. Enforce run/step deadlines in queue consumer.
-2. Add cancellation endpoint (`POST /api/discovery/runs/[runId]/cancel`).
-3. Add stale-run sweeper for orphaned `running` jobs.
-4. Add per-user/session rate limits and duplicate-run prevention.
-5. Standardize user-facing error codes/messages (`NO_HISTORY_WINDOW`, `NO_SEED_DATA`, `LASTFM_RATE_LIMIT`).
+1. Add cancellation endpoint (`POST /api/discovery/runs/[runId]/cancel`) with cooperative cancellation for running runs.
+2. Add stale-run sweeper for orphaned active runs (`running`/`cancel_requested`) and run it on a lightweight cron.
+3. Add duplicate-run prevention (one active run per user + mode) and basic per-user start rate limits.
+4. Keep deadlines/timeouts as-is from existing queue consumer protections.
+5. Discard expanded error-code taxonomy work for this phase.
 
 ## Phase 7: Observability + Cost Tuning
 
-1. Add dashboards/alerts for queue failures, timeout rate, stale runs, and run latency.
-2. Tune Last.fm cache TTLs and keep polling cost-aware.
-3. Batch writes where safe in worker paths.
-4. Bound recommendation expansion/fanout conservatively for D1 throughput.
+1. Publish a lightweight runbook with operator commands and saved D1 query checks.
+2. Skip dedicated dashboard UI and skip alerting for this scope.
+3. Keep cost tuning minimal and opportunistic only (no dedicated optimization project).
 
 ## Suggested Rollout Order
 
@@ -137,5 +143,5 @@ Goal: robust backfill completion with early unblock at latest-52-week readiness,
 ## Scope Guidance
 
 - Minimal Cloudflare-ready baseline: Phases 1-4
-- Recommended production baseline for current app: Phases 1-6
-- Full "extra mile" setup: Phases 1-7
+- Recommended production baseline for current app: Phases 1-6 (scoped)
+- Full "extra mile" setup: Phases 1-7 (minimal Phase 7 runbook)

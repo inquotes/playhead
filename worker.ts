@@ -1,4 +1,3 @@
-// @ts-ignore generated during OpenNext build
 import handler, { DOQueueHandler, DOShardedTagCache } from "./.open-next/worker.js";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 
@@ -25,6 +24,7 @@ type QueueEnv = {
     fetch: (request: Request) => Promise<Response>;
   };
   QUEUE_PROCESS_SECRET?: string;
+  DISCOVERY_RUN_SWEEPER_SECRET?: string;
   WEEKLY_BACKFILL_RUN_SECRET?: string;
   BACKFILL_WORKFLOW_TRIGGER_SECRET?: string;
   WEEKLY_BACKFILL_WORKFLOW: WorkflowBinding<WeeklyBackfillWorkflowParams>;
@@ -122,6 +122,21 @@ async function dispatchQueuedRun(env: QueueEnv, message: DiscoveryQueueMessage):
       body: JSON.stringify(message),
     }),
   );
+}
+
+async function runStaleDiscoverySweep(env: QueueEnv): Promise<void> {
+  const response = await env.WORKER_SELF_REFERENCE.fetch(
+    new Request("https://internal/api/internal/jobs/discovery-runs/stale-sweeper", {
+      method: "POST",
+      headers: {
+        ...(env.DISCOVERY_RUN_SWEEPER_SECRET ? { "x-run-sweeper-secret": env.DISCOVERY_RUN_SWEEPER_SECRET } : {}),
+      },
+    }),
+  );
+
+  if (!response.ok) {
+    throw new Error(`Stale discovery sweeper failed with status ${response.status}.`);
+  }
 }
 
 function retryDelaySeconds(attempts: number): number {
@@ -369,6 +384,9 @@ export default {
         message.retry({ delaySeconds: retryDelaySeconds(message.attempts) });
       }
     }
+  },
+  async scheduled(_controller: ScheduledController, env: QueueEnv, _ctx: ExecutionContext) {
+    await runStaleDiscoverySweep(env);
   },
 };
 

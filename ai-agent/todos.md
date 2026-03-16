@@ -1,60 +1,66 @@
 # AI Agent TODOs
 
-## Current Focus (Next)
+## Active Now
 
-1. Phase 6 kickoff: resilience hardening
+### Phase 6: Resilience Hardening
+- [x] Add cancellation endpoint for queued/running discovery runs.
+- [x] Add stale-run sweeper for orphaned `running` runs.
+- [x] Add duplicate-run prevention and basic per-user rate limits.
 
-- add cancellation endpoint for queued/running discovery runs
-- add stale-run sweeper for orphaned `running` runs
-- add duplicate-run prevention + basic per-user rate limits
+## Backlog
 
-2. Deferred from Phase 5 (backlog-priority)
+### Discovery + Recommendation UX
+- [ ] Expand recommendation card outbound links (Apple Music / Spotify when mapping confidence is high).
+- [ ] Add standalone in-app artist pages (instead of routing to Last.fm), including artist-specific recommendation flows.
+- [ ] Smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears).
+- [ ] Tighten empty-state copy and CTAs across no-data/no-recs flows.
+- [ ] Add preference controls for recommendation filtering:
+  - "I dislike this artist" persistent blocklist
+  - "Artists I love" positive weighting
+  - optional Last.fm Love write-back integration
 
-- readiness semantics hardening (`recentYearReadyAt`/`fullHistoryReadyAt` strictness under retrigger/retry)
-- backfill testing + measurement playbook
+### Platform + Cleanup
+- [ ] Set long-term latency budgets after more production-like usage.
+- [ ] Remove remaining MCP-era wording in older docs/comments as opportunistic cleanup.
+- [ ] Expand listening profile reports.
 
-- create a repeatable test protocol for long-history users (including ~1,100-week account baseline)
-- define exactly how to run tests without waiting for full completion every time (for example: fixed-size week subsets, replay runs, and canary users)
-- add timing instrumentation to capture throughput and latency:
+### Auth + Session UX
+- [ ] Verify Cloudflare **Always Use HTTPS** remains enabled in production.
+- [ ] Add lightweight mobile auth regression checklist (iOS Chrome + Safari).
+- [ ] After several stable days, simplify temporary auth fallback/bridging logic where safe.
+- [ ] Support quick re-login on known devices after first Last.fm connect (full OAuth fallback).
+- [ ] Split logout UX: simple logout plus explicit "forget this device" full sign-out option.
+
+### Data Quality + Attribution
+- [ ] Improve saved-artist progress attribution for collaborations and split credits (for example, "billy woods + Moor Mother").
+- [ ] Consider alias/identity-aware matching so "plays since saved" credits intended artists and recommended albums more accurately.
+
+### Backfill Testing and TIming
+
+#### Backfill Correctness + Measurement
+- [ ] Tighten readiness semantics (`recentYearReadyAt`/`fullHistoryReadyAt`) under retrigger/retry.
+- [ ] Build a repeatable backfill test protocol for long-history users (including ~1,100-week baseline accounts).
+- [ ] Define fast iteration test modes (fixed-size week subsets, replay runs, canary users).
+- [ ] Add timing instrumentation:
   - workflow iteration duration
   - weeks processed per minute/hour
   - time to `recentYearReadyAt`
   - time to `fullHistoryReadyAt`
-- add a quick operator script/dashboard query set for before/after comparisons on production data
-- document pass/fail thresholds so optimization PRs can be judged objectively
+- [ ] Add quick operator script/dashboard queries for before/after production comparisons.
+- [ ] Document objective pass/fail thresholds for optimization PRs.
 
-3. Deferred from Phase 5 (backlog-priority)
-
-- establish a concrete target: most backfills should complete in 5-10 minutes
-- define what "most" means (for example p50/p75 by discovered-week bucket)
-- split targets by milestone:
+#### Backfill Performance Targets
+- [ ] Set concrete target: most backfills complete in 5-10 minutes.
+- [ ] Define "most" (for example, p50/p75 by discovered-week bucket).
+- [ ] Split targets by milestone:
   - target time to `recentYearReadyAt`
   - target time to `fullHistoryReadyAt` for smaller histories
   - explicit expectation for extreme histories (1,000+ weeks)
-- produce an optimization roadmap tied to these targets (throughput knobs, batching strategy, workflow loop policy)
+- [ ] Produce optimization roadmap tied to targets (throughput knobs, batching strategy, workflow loop policy).
 
+## Un-Organized Ideas
 
-## Backlog Ideas
-
-- auth reliability follow-up:
-  - verify Cloudflare **Always Use HTTPS** remains enabled in production
-  - add a lightweight auth regression checklist for mobile (iOS Chrome + Safari)
-  - once stable for multiple days, simplify any temporary auth fallback/bridging logic where safe
-- outbound links expansion on recommendation cards (Apple Music / Spotify when mapping confidence is high)
-- standalone artist pages in-app (instead of routing to Last.fm), including artist-specific recommendation flows to find new recommendations from one selected artist
-- improve saved-artist progress attribution for collaborations and split credits (for example, album/artist strings like "billy woods + Moor Mother").
-- consider alias- or identity-aware matching so "plays since saved" can credit intended artists and recommended albums more accurately.
-- smoother returning-user auth UX: support quick re-login on known devices after first Last.fm connect, with full OAuth as fallback.
-- logout UX split: keep standard logout simple, and add an explicit "forget this device" option for full sign-out/re-auth behavior.
-- smooth rehydrate/revisit transitions (avoid landing-page flash before restored analysis/recommendation view appears)
-- tighten empty-state copy and CTAs across no-data/no-recs flows
-- set long-term latency budgets after more production-like usage
-- remove remaining MCP-era wording in older docs/comments as opportunistic cleanup
-- preference controls for recommendation filtering
-  - "I dislike this artist" + persistent blocklist
-  - "Artists I love" positive weighting
-  - optional Last.fm Love write-back integration
-- expanded listening profile reports
+- Integrate Apple's MusicKit to enable playlist creation or library additions directly from recommendations.
 
 ## Reference
 

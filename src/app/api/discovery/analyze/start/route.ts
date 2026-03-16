@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getUserInfo } from "@/lib/lastfm";
 import { prisma } from "@/server/db";
+import { guardDiscoveryRunStart } from "@/server/agent/jobs";
 import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -37,6 +38,26 @@ export async function POST(request: Request) {
         return attachVisitorCookie(response, context);
       }
       targetUsername = resolved;
+    }
+
+    const startGuard = await guardDiscoveryRunStart({
+      userAccountId: userAccount.id,
+      mode: "analyze",
+    });
+
+    if (!startGuard.ok) {
+      const response = NextResponse.json(
+        {
+          ok: false,
+          reason: startGuard.reason,
+          message: startGuard.message,
+          activeRunId: startGuard.activeRunId,
+          activeRunStatus: startGuard.activeRunStatus,
+          retryAfterSeconds: startGuard.retryAfterSeconds,
+        },
+        { status: startGuard.reason === "rate_limited" ? 429 : 409 },
+      );
+      return attachVisitorCookie(response, context);
     }
 
     const timeoutMs = Number(process.env.PIPELINE_TIMEOUT_MS ?? 180_000);

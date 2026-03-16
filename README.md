@@ -88,9 +88,11 @@ npm run lint
 
 - D1 schema migrations use Prisma diff + Wrangler apply scripts in `package.json`.
 
-## Current Status
+## Future Feature Ideas
 
-- Phases 1-5 are implemented and deployed.
-- Weekly maintenance is workflow-native.
-- Backfill status endpoint is available at `GET /api/profile/backfill-status`.
-- Next focus: Phase 6 resilience hardening.
+- Expand recommendation links beyond Last.fm (Apple Music / Spotify where mapping confidence is high).
+- Add standalone in-app artist pages with artist-specific recommendation flows.
+- Improve returning-user auth UX with faster known-device re-login and a clearer "forget this device" logout path.
+- Add recommendation preference controls (block artists, boost favorites, optional Last.fm Love integration).
+- Improve collaboration/split-credit attribution so "plays since saved" better reflects intended artists.
+- Add playlist creation from recommendations via Apple MusicKit integration.

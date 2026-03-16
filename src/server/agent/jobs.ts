@@ -51,6 +51,20 @@ class RunTimeoutError extends Error {
   }
 }
 
+class RunCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunCancelledError";
+  }
+}
+
+class RunNoLongerActiveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunNoLongerActiveError";
+  }
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -96,8 +110,11 @@ async function markRunFailed(
   appendRunEvent: RunEventAppender,
   terminationReason: "error" | "timeout" = "error",
 ) {
-  await prisma.agentRun.update({
-    where: { id: runId },
+  const updated = await prisma.agentRun.updateMany({
+    where: {
+      id: runId,
+      status: { in: ["queued", "running", "cancel_requested"] },
+    },
     data: {
       status: "failed",
       errorMessage: message,
@@ -106,9 +123,37 @@ async function markRunFailed(
     },
   });
 
+  if (updated.count !== 1) {
+    return;
+  }
+
   await appendRunEvent({
     type: "run_failed",
     payload: { message: `Run failed: ${message}` },
+  });
+}
+
+async function markRunCancelled(runId: string, message: string, appendRunEvent: RunEventAppender) {
+  const updated = await prisma.agentRun.updateMany({
+    where: {
+      id: runId,
+      status: { in: ["queued", "running", "cancel_requested"] },
+    },
+    data: {
+      status: "failed",
+      errorMessage: message,
+      completedAt: new Date(),
+      terminationReason: "cancelled",
+    },
+  });
+
+  if (updated.count !== 1) {
+    return;
+  }
+
+  await appendRunEvent({
+    type: "run_cancelled",
+    payload: { message },
   });
 }
 
@@ -118,7 +163,10 @@ export async function markRunFailedById(runId: string, message: string) {
     await markRunFailed(runId, message, appendRunEvent, "error");
   } catch {
     await prisma.agentRun.updateMany({
-      where: { id: runId, NOT: { status: "completed" } },
+      where: {
+        id: runId,
+        status: { in: ["queued", "running", "cancel_requested"] },
+      },
       data: {
         status: "failed",
         errorMessage: message,
@@ -126,6 +174,25 @@ export async function markRunFailedById(runId: string, message: string) {
         terminationReason: "error",
       },
     });
+  }
+}
+
+async function ensureRunStillActive(runId: string) {
+  const run = await prisma.agentRun.findUnique({
+    where: { id: runId },
+    select: { status: true, terminationReason: true },
+  });
+
+  if (!run) {
+    throw new RunNoLongerActiveError("Run no longer exists.");
+  }
+
+  if (run.status === "cancel_requested" || run.terminationReason === "cancelled") {
+    throw new RunCancelledError("Run cancelled by user request.");
+  }
+
+  if (run.status !== "running") {
+    throw new RunNoLongerActiveError(`Run is no longer active (${run.status}).`);
   }
 }
 
@@ -141,6 +208,230 @@ const recommendRequestSchema = z.object({
   laneId: z.string().min(1),
   limit: z.number().int().min(1).max(8).default(4),
 });
+
+type StartGuardResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "duplicate_run" | "rate_limited";
+      message: string;
+      activeRunId?: string;
+      activeRunStatus?: string;
+      retryAfterSeconds?: number;
+    };
+
+export async function guardDiscoveryRunStart(params: {
+  userAccountId: string;
+  mode: "analyze" | "recommend";
+  now?: Date;
+}): Promise<StartGuardResult> {
+  const now = params.now ?? new Date();
+  const windowMsRaw = Number(process.env.DISCOVERY_START_RATE_LIMIT_WINDOW_MS ?? 120_000);
+  const maxStartsRaw = Number(process.env.DISCOVERY_START_RATE_LIMIT_MAX ?? 6);
+  const windowMs = Number.isFinite(windowMsRaw) ? Math.max(10_000, Math.floor(windowMsRaw)) : 120_000;
+  const maxStarts = Number.isFinite(maxStartsRaw) ? Math.max(1, Math.floor(maxStartsRaw)) : 6;
+  const windowStart = new Date(now.getTime() - windowMs);
+
+  const [activeRun, startCountInWindow] = await prisma.$transaction([
+    prisma.agentRun.findFirst({
+      where: {
+        userAccountId: params.userAccountId,
+        mode: params.mode,
+        status: { in: ["queued", "running", "cancel_requested"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true },
+    }),
+    prisma.agentRun.count({
+      where: {
+        userAccountId: params.userAccountId,
+        mode: params.mode,
+        createdAt: { gte: windowStart },
+      },
+    }),
+  ]);
+
+  if (activeRun) {
+    return {
+      ok: false,
+      reason: "duplicate_run",
+      message: "A run of this type is already in progress for your account.",
+      activeRunId: activeRun.id,
+      activeRunStatus: activeRun.status,
+    };
+  }
+
+  if (startCountInWindow >= maxStarts) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(windowMs / 1000));
+    return {
+      ok: false,
+      reason: "rate_limited",
+      message: "Too many run starts in a short period. Please wait and try again.",
+      retryAfterSeconds,
+    };
+  }
+
+  return { ok: true };
+}
+
+export async function requestDiscoveryRunCancellation(params: {
+  runId: string;
+  visitorSessionId: string;
+  userAccountId: string;
+}) {
+  const run = await prisma.agentRun.findFirst({
+    where: {
+      id: params.runId,
+      visitorSessionId: params.visitorSessionId,
+      userAccountId: params.userAccountId,
+    },
+    select: { id: true, mode: true, status: true },
+  });
+
+  if (!run) {
+    return { ok: false as const, status: 404, message: "Run not found." };
+  }
+
+  if (run.status === "completed" || run.status === "failed") {
+    return {
+      ok: true as const,
+      status: 200,
+      runId: run.id,
+      mode: run.mode,
+      runStatus: run.status,
+      cancellation: "already_terminal" as const,
+      message: "Run is already complete.",
+    };
+  }
+
+  const appendRunEvent = await createRunEventAppender(run.id);
+
+  if (run.status === "queued") {
+    await markRunCancelled(run.id, "Run cancelled before execution.", appendRunEvent);
+    return {
+      ok: true as const,
+      status: 200,
+      runId: run.id,
+      mode: run.mode,
+      runStatus: "failed",
+      cancellation: "cancelled" as const,
+      message: "Queued run cancelled.",
+    };
+  }
+
+  if (run.status === "cancel_requested") {
+    return {
+      ok: true as const,
+      status: 202,
+      runId: run.id,
+      mode: run.mode,
+      runStatus: run.status,
+      cancellation: "already_requested" as const,
+      message: "Cancellation already requested.",
+    };
+  }
+
+  const updated = await prisma.agentRun.updateMany({
+    where: { id: run.id, status: "running" },
+    data: {
+      status: "cancel_requested",
+      terminationReason: "cancel_requested",
+    },
+  });
+
+  if (updated.count !== 1) {
+    return {
+      ok: true as const,
+      status: 200,
+      runId: run.id,
+      mode: run.mode,
+      runStatus: "failed",
+      cancellation: "already_terminal" as const,
+      message: "Run finished before cancellation was applied.",
+    };
+  }
+
+  await appendRunEvent({
+    type: "run_cancel_requested",
+    payload: { message: "Cancellation requested. Finishing current step before stopping." },
+  });
+
+  return {
+    ok: true as const,
+    status: 202,
+    runId: run.id,
+    mode: run.mode,
+    runStatus: "cancel_requested",
+    cancellation: "requested" as const,
+    message: "Cancellation requested.",
+  };
+}
+
+export async function sweepStaleDiscoveryRuns(params?: { olderThanMs?: number; limit?: number }) {
+  const now = new Date();
+  const olderThanRaw = params?.olderThanMs ?? Number(process.env.DISCOVERY_STALE_RUN_MS ?? 15 * 60 * 1000);
+  const limitRaw = params?.limit ?? Number(process.env.DISCOVERY_STALE_SWEEP_LIMIT ?? 25);
+  const olderThanMs = Number.isFinite(olderThanRaw) ? Math.max(60_000, Math.floor(olderThanRaw)) : 15 * 60 * 1000;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 25;
+  const staleBefore = new Date(now.getTime() - olderThanMs);
+
+  const staleRuns = await prisma.agentRun.findMany({
+    where: {
+      status: { in: ["running", "cancel_requested"] },
+      startedAt: { lt: staleBefore },
+    },
+    orderBy: { startedAt: "asc" },
+    take: limit,
+    select: {
+      id: true,
+      mode: true,
+      status: true,
+      startedAt: true,
+      createdAt: true,
+      userAccountId: true,
+    },
+  });
+
+  let swept = 0;
+  const sweptRunIds: string[] = [];
+
+  for (const run of staleRuns) {
+    const appendRunEvent = await createRunEventAppender(run.id);
+    const updated = await prisma.agentRun.updateMany({
+      where: {
+        id: run.id,
+        status: { in: ["running", "cancel_requested"] },
+      },
+      data: {
+        status: "failed",
+        errorMessage: `Run marked failed by stale-run sweeper after exceeding ${Math.floor(olderThanMs / 1000)}s in active state.`,
+        completedAt: now,
+        terminationReason: "timeout",
+      },
+    });
+
+    if (updated.count === 1) {
+      swept += 1;
+      sweptRunIds.push(run.id);
+      await appendRunEvent({
+        type: "run_failed",
+        payload: {
+          message: "Run marked failed by stale-run sweeper.",
+          staleThresholdMs: olderThanMs,
+        },
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    scanned: staleRuns.length,
+    swept,
+    staleBefore,
+    thresholdMs: olderThanMs,
+    sweptRunIds,
+  };
+}
 
 async function claimQueuedRun(runId: string, mode: "analyze" | "recommend") {
   const claimed = await prisma.agentRun.updateMany({
@@ -291,6 +582,8 @@ export async function launchAnalyzeRun(params: {
     });
     const timeoutMs = Math.max(5_000, run?.timeoutMs ?? 180_000);
 
+    await ensureRunStillActive(params.runId);
+
     const range = resolveRange({
       preset: params.preset,
       from: params.from,
@@ -355,6 +648,8 @@ export async function launchAnalyzeRun(params: {
       }
     }
 
+    await ensureRunStillActive(params.runId);
+
     const snapshot = await withTimeout(
       buildListeningSnapshot({
         username: params.username,
@@ -393,6 +688,8 @@ export async function launchAnalyzeRun(params: {
         knownArtists: snapshot.knownArtists.length,
       },
     };
+
+    await ensureRunStillActive(params.runId);
 
     if (snapshot.topArtists.length === 0) {
       const summary = `No scrobbles were found in ${range.label.toLowerCase()} for ${params.username}. Choose a broader window to generate lanes.`;
@@ -480,6 +777,9 @@ export async function launchAnalyzeRun(params: {
     });
 
     const heardArtists = snapshot.knownArtists.map((item) => item.artistName);
+
+    await ensureRunStillActive(params.runId);
+
     const analysisRun = await prisma.analysisRun.create({
       data: {
         visitorSessionId: params.visitorSessionId,
@@ -532,6 +832,15 @@ export async function launchAnalyzeRun(params: {
       },
     });
   } catch (error) {
+    if (error instanceof RunCancelledError) {
+      await markRunCancelled(params.runId, error.message, appendRunEvent);
+      return;
+    }
+
+    if (error instanceof RunNoLongerActiveError) {
+      return;
+    }
+
     await markRunFailed(
       params.runId,
       error instanceof Error ? error.message : "Analyze run failed unexpectedly.",
@@ -569,6 +878,8 @@ export async function launchRecommendRun(params: {
     });
     const timeoutMs = Math.max(5_000, run?.timeoutMs ?? 180_000);
 
+    await ensureRunStillActive(params.runId);
+
     const analysisRun = await prisma.analysisRun.findFirst({
       where: {
         id: params.analysisRunId,
@@ -591,6 +902,8 @@ export async function launchRecommendRun(params: {
     if (!selectedLane) {
       throw new Error("Lane not found.");
     }
+
+    await ensureRunStillActive(params.runId);
 
     await appendRunEvent({
       type: "recommendation_context_loaded",
@@ -641,6 +954,8 @@ export async function launchRecommendRun(params: {
     });
 
     const laneContext = laneToContext(selectedLane);
+
+    await ensureRunStillActive(params.runId);
 
     const hasLaneSeedData =
       laneContext.memberArtists.length > 0 ||
@@ -761,6 +1076,8 @@ export async function launchRecommendRun(params: {
       timing: recommendationResult.timing ?? null,
     };
 
+    await ensureRunStillActive(params.runId);
+
     await prisma.recommendationRun.deleteMany({
       where: {
         analysisRunId: analysisRun.id,
@@ -821,6 +1138,15 @@ export async function launchRecommendRun(params: {
       },
     });
   } catch (error) {
+    if (error instanceof RunCancelledError) {
+      await markRunCancelled(params.runId, error.message, appendRunEvent);
+      return;
+    }
+
+    if (error instanceof RunNoLongerActiveError) {
+      return;
+    }
+
     await markRunFailed(
       params.runId,
       error instanceof Error ? error.message : "Recommend run failed unexpectedly.",

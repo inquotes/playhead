@@ -9,6 +9,11 @@
   ],
   "workers_dev": true,
   "preview_urls": true,
+  "triggers": {
+    "crons": [
+      "0,20,40 * * * *"
+    ]
+  },
   "routes": [
     {
       "pattern": "play-head.com",
