@@ -1,4 +1,4 @@
-import { DiscoveryApp } from "@/components/discovery-app";
+import { DiscoveryApp } from "@/components/discovery";
 
 export default function Home() {
   return <DiscoveryApp />;
