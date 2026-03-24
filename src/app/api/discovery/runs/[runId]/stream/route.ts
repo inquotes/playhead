@@ -1,3 +1,4 @@
+import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { getOrCreateVisitorSession } from "@/server/session";
 
@@ -12,10 +13,16 @@ function toSse(event: string, data: unknown) {
 export async function GET(request: Request, context: Params) {
   const { runId } = await context.params;
   const session = await getOrCreateVisitorSession();
+  const userAccount = await getCurrentUserAccount();
+
+  if (!userAccount) {
+    return new Response("Authentication required", { status: 401 });
+  }
 
   const run = await prisma.agentRun.findFirst({
     where: {
       id: runId,
+      userAccountId: userAccount.id,
       visitorSessionId: session.sessionId,
     },
   });

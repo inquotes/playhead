@@ -4,7 +4,7 @@ import { runWeeklyHistoryWatchdog } from "@/server/lastfm/weekly-history";
 function isAuthorized(request: Request): boolean {
   const secret = process.env.WEEKLY_BACKFILL_WATCHDOG_SECRET;
   if (!secret) {
-    return true;
+    return false;
   }
 
   const provided = request.headers.get("x-watchdog-secret");

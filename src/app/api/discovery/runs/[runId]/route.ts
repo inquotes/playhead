@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
@@ -17,10 +18,17 @@ export async function GET(request: Request, context: Params) {
     const limitRaw = Number(url.searchParams.get("limit") ?? "100");
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 100;
     const session = await getOrCreateVisitorSession();
+    const userAccount = await getCurrentUserAccount();
+
+    if (!userAccount) {
+      const response = NextResponse.json({ ok: false, message: "Authentication required." }, { status: 401 });
+      return attachVisitorCookie(response, session);
+    }
 
     const run = await prisma.agentRun.findFirst({
       where: {
         id: runId,
+        userAccountId: userAccount.id,
         visitorSessionId: session.sessionId,
       },
     });

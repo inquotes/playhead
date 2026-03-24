@@ -10,7 +10,7 @@ const requestSchema = z.object({
 function isAuthorized(request: Request): boolean {
   const secret = process.env.QUEUE_PROCESS_SECRET;
   if (!secret) {
-    return true;
+    return false;
   }
 
   const provided = request.headers.get("x-queue-secret");

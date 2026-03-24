@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 import type { Lane } from "@/server/discovery/types";
@@ -11,12 +12,18 @@ export async function GET(_: Request, context: Params) {
   try {
     const { analysisRunId } = await context.params;
     const visitorContext = await getOrCreateVisitorSession();
-    const visitorSessionId = visitorContext.sessionId;
+    const userAccount = await getCurrentUserAccount();
+
+    if (!userAccount) {
+      const response = NextResponse.json({ ok: false, message: "Authentication required." }, { status: 401 });
+      return attachVisitorCookie(response, visitorContext);
+    }
 
     const run = await prisma.analysisRun.findFirst({
       where: {
         id: analysisRunId,
-        visitorSessionId,
+        userAccountId: userAccount.id,
+        visitorSessionId: visitorContext.sessionId,
       },
     });
 

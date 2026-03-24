@@ -1,5 +1,23 @@
 # AI Agent TODOs
 
+## Hardening (before new features)
+
+See `docs/adversarial-review.md` for full analysis and rationale.
+
+### Must-fix (blocks safe feature development)
+- [ ] Fix internal route default-allow: reject requests when secret env vars are unset.
+- [ ] Fix discovery read route auth: add `getCurrentUserAccount()` + ownership checks to lanes, runs, and stream endpoints.
+- [ ] Clamp pagination limit on `/api/profile/past-recommendations`.
+- [ ] Add Vitest + initial test coverage: scoring/ranking, artist normalization, auth token verification, API route auth guards.
+- [ ] Decompose `discovery-app.tsx`: extract view components, `useDiscoveryRun` polling hook, and `useReducer` for state.
+
+### Should-fix (prevents accumulating debt)
+- [ ] Replace swallowed errors (`void error`, `.catch(() => {})`) with structured error logging throughout async pipeline.
+- [ ] Consolidate magic numbers (scoring weights, slice limits, retry delays, timeouts) into `src/lib/config.ts`.
+- [ ] Thread `AbortSignal` through pipeline for real timeout and cancellation support.
+- [ ] Add `jsx-a11y` ESLint plugin and fix flagged accessibility issues.
+- [ ] Switch `lastfm.ts` retry to exponential backoff with jitter; respect `Retry-After` headers.
+
 ## Backlog
 
 ### Discovery + Recommendation UX
@@ -57,6 +75,7 @@
 
 ## Reference
 
+- Adversarial codebase review: `docs/adversarial-review.md`
 - Cloudflare plan: `ai-agent/cloudflare-deploy-readiness-plan.md`
 - Inspiration: https://listentomore.com/
 - Source repo reviewed: https://github.com/rianvdm/listentomore

@@ -4,7 +4,7 @@ import { sweepStaleDiscoveryRuns } from "@/server/agent/jobs";
 function isAuthorized(request: Request): boolean {
   const secret = process.env.DISCOVERY_RUN_SWEEPER_SECRET;
   if (!secret) {
-    return true;
+    return false;
   }
 
   const provided = request.headers.get("x-run-sweeper-secret");
