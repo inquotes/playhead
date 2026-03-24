@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const cursor = searchParams.get("cursor")?.trim() || undefined;
     const limitRaw = Number(searchParams.get("limit"));
-    const limit = Number.isFinite(limitRaw) ? limitRaw : 10;
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.floor(limitRaw))) : 10;
 
     const page = await getPastRecommendationsPage({
       userAccountId: user.id,

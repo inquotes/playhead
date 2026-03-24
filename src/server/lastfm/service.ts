@@ -47,16 +47,16 @@ type ParsedTopAlbum = {
   playcount: number;
 };
 
-function normalizeArtistName(value: string): string {
+export function normalizeArtistName(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function toNumber(value: unknown): number | null {
+export function toNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function readString(value: unknown): string {
+export function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 

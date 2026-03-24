@@ -23,7 +23,7 @@ import {
   refreshRecentTailSnapshot,
 } from "@/server/lastfm/recent-tail";
 
-function mergeArtistPlaycounts(
+export function mergeArtistPlaycounts(
   base: Array<{ artistName: string; normalizedName: string; playcount: number }>,
   delta: Array<{ artistName: string; normalizedName: string; playcount: number }>,
 ): Array<{ artistName: string; normalizedName: string; playcount: number }> {

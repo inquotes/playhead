@@ -50,7 +50,7 @@ const explanationSchema = z.object({
   explanations: z.array(z.object({ artist: z.string().min(1).max(80), blurb: z.string().min(1).max(220) })).min(1).max(8),
 });
 
-function normalizeArtist(value: string): string {
+export function normalizeArtist(value: string): string {
   return value.trim().toLowerCase();
 }
 
@@ -132,7 +132,7 @@ function mapTasteLanesToUi(lanes: TasteLane[]): Lane[] {
   }));
 }
 
-function uniqueNormalizedArtists(values: string[]): string[] {
+export function uniqueNormalizedArtists(values: string[]): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
   for (const value of values) {
@@ -146,7 +146,7 @@ function uniqueNormalizedArtists(values: string[]): string[] {
   return output;
 }
 
-function countTagOverlap(candidateTags: string[], laneTags: string[]): number {
+export function countTagOverlap(candidateTags: string[], laneTags: string[]): number {
   if (candidateTags.length === 0 || laneTags.length === 0) return 0;
   const laneTagSet = new Set(laneTags.map((tag) => tag.toLowerCase()));
   return candidateTags.reduce((count, tag) => {
@@ -642,7 +642,7 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
   }
 }
 
-function rankCandidate(params: {
+export function rankCandidate(params: {
   supportCount: number;
   supportMatchTotal: number;
   candidateTags: string[];

@@ -21,7 +21,9 @@
     "db:d1:migrations:apply:remote": "wrangler d1 migrations apply playhead-db --remote",
     "db:d1:diff": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script --output",
     "db:d1:execute:local": "wrangler d1 execute playhead-db --local --file",
-    "db:d1:execute:remote": "wrangler d1 execute playhead-db --remote --file"
+    "db:d1:execute:remote": "wrangler d1 execute playhead-db --remote --file",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.13.1",
@@ -43,6 +45,7 @@
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
     "typescript": "^5",
+    "vitest": "^4.1.1",
     "wrangler": "^4.39.0"
   }
 }
