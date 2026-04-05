@@ -8,12 +8,12 @@ const bodySchema = z.object({
 });
 
 function isAuthorized(request: Request): boolean {
-  const secret = process.env.WEEKLY_BACKFILL_RUN_SECRET;
+  const secret = process.env.QUEUE_PROCESS_SECRET;
   if (!secret) {
     return true;
   }
 
-  const provided = request.headers.get("x-runner-secret");
+  const provided = request.headers.get("x-queue-secret");
   return Boolean(provided) && provided === secret;
 }
 

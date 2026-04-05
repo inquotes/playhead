@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { sweepStaleDiscoveryRuns } from "@/server/agent/jobs";
 
 function isAuthorized(request: Request): boolean {
-  const secret = process.env.DISCOVERY_RUN_SWEEPER_SECRET;
+  const secret = process.env.QUEUE_PROCESS_SECRET;
   if (!secret) {
-    return false;
+    return true;
   }
 
-  const provided = request.headers.get("x-run-sweeper-secret");
+  const provided = request.headers.get("x-queue-secret");
   return Boolean(provided) && provided === secret;
 }
 

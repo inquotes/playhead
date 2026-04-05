@@ -12,7 +12,7 @@ Environment knobs (optional):
 
 - `DISCOVERY_STALE_RUN_MS` (default `900000`)
 - `DISCOVERY_STALE_SWEEP_LIMIT` (default `25`)
-- `DISCOVERY_RUN_SWEEPER_SECRET` (recommended in production)
+- `QUEUE_PROCESS_SECRET` (recommended in production)
 
 ## Manual Operations
 
@@ -26,14 +26,14 @@ Run stale sweep manually:
 
 ```bash
 curl -X POST "https://play-head.com/api/internal/jobs/discovery-runs/stale-sweeper" \
-  -H "x-run-sweeper-secret: $DISCOVERY_RUN_SWEEPER_SECRET"
+  -H "x-queue-secret: $QUEUE_PROCESS_SECRET"
 ```
 
 Run stale sweep with overrides:
 
 ```bash
 curl -X POST "https://play-head.com/api/internal/jobs/discovery-runs/stale-sweeper?olderThanMs=600000&limit=50" \
-  -H "x-run-sweeper-secret: $DISCOVERY_RUN_SWEEPER_SECRET"
+  -H "x-queue-secret: $QUEUE_PROCESS_SECRET"
 ```
 
 Cancel a specific run (authenticated app session required):

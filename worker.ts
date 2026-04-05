@@ -26,9 +26,6 @@ type QueueEnv = {
     fetch: (request: Request) => Promise<Response>;
   };
   QUEUE_PROCESS_SECRET?: string;
-  DISCOVERY_RUN_SWEEPER_SECRET?: string;
-  WEEKLY_BACKFILL_RUN_SECRET?: string;
-  BACKFILL_WORKFLOW_TRIGGER_SECRET?: string;
   WEEKLY_BACKFILL_WORKFLOW: WorkflowBinding<WeeklyBackfillWorkflowParams>;
 };
 
@@ -131,7 +128,7 @@ async function runStaleDiscoverySweep(env: QueueEnv): Promise<void> {
     new Request("https://internal/api/internal/jobs/discovery-runs/stale-sweeper", {
       method: "POST",
       headers: {
-        ...(env.DISCOVERY_RUN_SWEEPER_SECRET ? { "x-run-sweeper-secret": env.DISCOVERY_RUN_SWEEPER_SECRET } : {}),
+        ...(env.QUEUE_PROCESS_SECRET ? { "x-queue-secret": env.QUEUE_PROCESS_SECRET } : {}),
       },
     }),
   );
@@ -147,9 +144,9 @@ function retryDelaySeconds(attempts: number): number {
 }
 
 async function triggerWeeklyBackfillWorkflow(request: Request, env: QueueEnv): Promise<Response> {
-  const secret = env.BACKFILL_WORKFLOW_TRIGGER_SECRET;
+  const secret = env.QUEUE_PROCESS_SECRET;
   if (secret) {
-    const provided = request.headers.get("x-workflow-trigger-secret");
+    const provided = request.headers.get("x-queue-secret");
     if (!provided || provided !== secret) {
       return new Response(JSON.stringify({ ok: false, message: "Unauthorized." }), {
         status: 401,
@@ -238,7 +235,7 @@ export class WeeklyBackfillWorkflow extends WorkflowEntrypoint<QueueEnv, WeeklyB
         ...init,
         headers: {
           "Content-Type": "application/json",
-          ...(this.env.WEEKLY_BACKFILL_RUN_SECRET ? { "x-runner-secret": this.env.WEEKLY_BACKFILL_RUN_SECRET } : {}),
+          ...(this.env.QUEUE_PROCESS_SECRET ? { "x-queue-secret": this.env.QUEUE_PROCESS_SECRET } : {}),
           ...(init.headers ?? {}),
         },
       }),

@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { runWeeklyHistoryWatchdog } from "@/server/lastfm/weekly-history";
 
 function isAuthorized(request: Request): boolean {
-  const secret = process.env.WEEKLY_BACKFILL_WATCHDOG_SECRET;
+  const secret = process.env.QUEUE_PROCESS_SECRET;
   if (!secret) {
     return true;
   }
 
-  const provided = request.headers.get("x-watchdog-secret");
+  const provided = request.headers.get("x-queue-secret");
   return Boolean(provided) && provided === secret;
 }
 

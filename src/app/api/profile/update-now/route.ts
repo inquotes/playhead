@@ -36,13 +36,13 @@ export async function POST(request: Request) {
       });
     }
 
-    const triggerSecret = process.env.BACKFILL_WORKFLOW_TRIGGER_SECRET;
+    const triggerSecret = process.env.QUEUE_PROCESS_SECRET;
     const triggerUrl = new URL("/__internal/workflows/weekly-backfill/trigger", request.url);
     const triggerResponse = await fetch(triggerUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(triggerSecret ? { "x-workflow-trigger-secret": triggerSecret } : {}),
+        ...(triggerSecret ? { "x-queue-secret": triggerSecret } : {}),
       },
       body: JSON.stringify({
         userAccountId: user.id,

@@ -14,7 +14,6 @@ const LOCK_TTL_MS = 120_000;
 const POLL_INTERVAL_MS = 1_000;
 const RETRY_BASE_MS = 60_000;
 const MAX_CONSECUTIVE_FAILURES = 8;
-const MAX_WEEK_ATTEMPTS = 3;
 
 type WorkflowTrigger = "update_now" | "recent_year_gate" | "watchdog" | "other";
 
@@ -177,22 +176,16 @@ async function heartbeat(userAccountId: string, lockToken: string): Promise<bool
 }
 
 async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Promise<{ recentYearReady: boolean; fullReady: boolean }> {
-  const settledWeeks = await prisma.userWeeklyIngestedWeek.findMany({
-    where: {
-      userAccountId,
-      OR: [
-        { status: "done" },
-        { status: "failed", attemptCount: { gte: MAX_WEEK_ATTEMPTS } },
-      ],
-    },
+  const attemptedWeeks = await prisma.userWeeklyIngestedWeek.findMany({
+    where: { userAccountId },
     select: { weekStart: true, weekEnd: true, status: true },
   });
-  const settledSet = new Set(settledWeeks.map((week) => `${week.weekStart}:${week.weekEnd}`));
-  const doneCount = settledWeeks.filter((w) => w.status === "done").length;
+  const attemptedSet = new Set(attemptedWeeks.map((week) => `${week.weekStart}:${week.weekEnd}`));
+  const doneCount = attemptedWeeks.filter((w) => w.status === "done").length;
 
   const recentWeeks = weeks.slice(0, Math.min(RECENT_YEAR_WEEK_COUNT, weeks.length));
-  const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => settledSet.has(weekKey(week)));
-  const fullReady = weeks.length > 0 && weeks.every((week) => settledSet.has(weekKey(week)));
+  const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => attemptedSet.has(weekKey(week)));
+  const fullReady = weeks.length > 0 && weeks.every((week) => attemptedSet.has(weekKey(week)));
 
   await prisma.userWeeklyListeningState.update({
     where: { userAccountId },
@@ -525,6 +518,7 @@ async function runClaimedJob(params: {
   const started = Date.now();
   let hadErrors = false;
   let processedCount = 0;
+  const failedThisRun = new Set<string>();
 
   const existingJob = await prisma.userWeeklyBackfillJob.findUnique({
     where: { userAccountId: params.userAccountId },
@@ -553,18 +547,12 @@ async function runClaimedJob(params: {
         return;
       }
 
-      const settledRows = await prisma.userWeeklyIngestedWeek.findMany({
-        where: {
-          userAccountId: params.userAccountId,
-          OR: [
-            { status: "done" },
-            { status: "failed", attemptCount: { gte: MAX_WEEK_ATTEMPTS } },
-          ],
-        },
+      const doneRows = await prisma.userWeeklyIngestedWeek.findMany({
+        where: { userAccountId: params.userAccountId, status: "done" },
         select: { weekStart: true, weekEnd: true },
       });
-      const settledSet = new Set(settledRows.map((row) => `${row.weekStart}:${row.weekEnd}`));
-      const remaining = weeks.filter((week) => !settledSet.has(weekKey(week)));
+      const doneSet = new Set(doneRows.map((row) => `${row.weekStart}:${row.weekEnd}`));
+      const remaining = weeks.filter((week) => !doneSet.has(weekKey(week)) && !failedThisRun.has(weekKey(week)));
 
       if (remaining.length === 0) {
         await refreshProgress(params.userAccountId, weeks);
@@ -587,6 +575,7 @@ async function runClaimedJob(params: {
         });
         if (!ok) {
           hadErrors = true;
+          failedThisRun.add(weekKey(week));
         } else {
           processedCount++;
         }
@@ -741,7 +730,7 @@ async function triggerBackfillWorkflow(params: {
     const { env } = getCloudflareContext();
     const runtime = env as unknown as {
       WORKER_SELF_REFERENCE?: { fetch: (request: Request) => Promise<Response> };
-      BACKFILL_WORKFLOW_TRIGGER_SECRET?: string;
+      QUEUE_PROCESS_SECRET?: string;
     };
 
     if (!runtime.WORKER_SELF_REFERENCE?.fetch) {
@@ -753,8 +742,8 @@ async function triggerBackfillWorkflow(params: {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(runtime.BACKFILL_WORKFLOW_TRIGGER_SECRET
-            ? { "x-workflow-trigger-secret": runtime.BACKFILL_WORKFLOW_TRIGGER_SECRET }
+          ...(runtime.QUEUE_PROCESS_SECRET
+            ? { "x-queue-secret": runtime.QUEUE_PROCESS_SECRET }
             : {}),
         },
         body: JSON.stringify({

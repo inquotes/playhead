@@ -8,8 +8,8 @@ async function run() {
   const sweepUrl = `${appOrigin}/api/internal/jobs/discovery-runs/stale-sweeper`;
   const headers = {};
 
-  if (process.env.DISCOVERY_RUN_SWEEPER_SECRET) {
-    headers["x-run-sweeper-secret"] = process.env.DISCOVERY_RUN_SWEEPER_SECRET;
+  if (process.env.QUEUE_PROCESS_SECRET) {
+    headers["x-queue-secret"] = process.env.QUEUE_PROCESS_SECRET;
   }
 
   console.log(`[smoke] Running stale-run sweep: ${sweepUrl}`);
