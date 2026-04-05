@@ -274,18 +274,76 @@ async function processSingleWeek(params: {
         return !existing || existing.playcount !== row.playcount || existing.artistName !== row.artistName;
       });
 
-    await prisma.$transaction(async (tx) => {
-      if (hasWeeklyChanges) {
-        await tx.userWeeklyArtistPlaycount.deleteMany({
+    // Prepare rollup changes (read existing rollups before batch write)
+    const rollupsToCreate: Array<{ userAccountId: string; artistName: string; normalizedName: string; playcount: number }> = [];
+    const rollupUpdates: Array<ReturnType<typeof prisma.userKnownArtistRollup.update>> = [];
+
+    if (deltaByArtist.size > 0) {
+      const normalizedNames = [...deltaByArtist.keys()];
+      const existingRollups = await prisma.userKnownArtistRollup.findMany({
+        where: {
+          userAccountId,
+          normalizedName: { in: normalizedNames },
+        },
+        select: {
+          normalizedName: true,
+          playcount: true,
+        },
+      });
+
+      const existingRollupByArtist = new Map(existingRollups.map((row) => [row.normalizedName, row.playcount]));
+
+      for (const row of deltaByArtist.values()) {
+        const current = existingRollupByArtist.get(row.normalizedName);
+        if (current == null) {
+          if (row.delta > 0) {
+            rollupsToCreate.push({
+              userAccountId,
+              artistName: row.artistName,
+              normalizedName: row.normalizedName,
+              playcount: row.delta,
+            });
+          }
+          continue;
+        }
+
+        const nextPlaycount = Math.max(0, current + row.delta);
+        if (nextPlaycount !== current || row.delta !== 0) {
+          rollupUpdates.push(
+            prisma.userKnownArtistRollup.update({
+              where: {
+                userAccountId_normalizedName: {
+                  userAccountId,
+                  normalizedName: row.normalizedName,
+                },
+              },
+              data: {
+                artistName: row.artistName,
+                playcount: nextPlaycount,
+              },
+            }),
+          );
+        }
+      }
+    }
+
+    // Batch transaction: all writes in a single D1-compatible batch
+    const batchOps: Array<ReturnType<typeof prisma.userWeeklyArtistPlaycount.deleteMany>> = [];
+
+    if (hasWeeklyChanges) {
+      batchOps.push(
+        prisma.userWeeklyArtistPlaycount.deleteMany({
           where: {
             userAccountId,
             weekStart: week.from,
             weekEnd: week.to,
           },
-        });
+        }),
+      );
 
-        if (incomingRows.length > 0) {
-          await tx.userWeeklyArtistPlaycount.createMany({
+      if (incomingRows.length > 0) {
+        batchOps.push(
+          prisma.userWeeklyArtistPlaycount.createMany({
             data: incomingRows.map((row) => ({
               userAccountId,
               weekStart: week.from,
@@ -294,75 +352,23 @@ async function processSingleWeek(params: {
               normalizedName: row.normalizedName,
               playcount: row.playcount,
             })),
-          });
-        }
+          }) as unknown as ReturnType<typeof prisma.userWeeklyArtistPlaycount.deleteMany>,
+        );
       }
+    }
 
-      if (deltaByArtist.size > 0) {
-        const normalizedNames = [...deltaByArtist.keys()];
-        const existingRollups = await tx.userKnownArtistRollup.findMany({
-          where: {
-            userAccountId,
-            normalizedName: { in: normalizedNames },
-          },
-          select: {
-            normalizedName: true,
-            playcount: true,
-          },
-        });
+    if (rollupsToCreate.length > 0) {
+      batchOps.push(
+        prisma.userKnownArtistRollup.createMany({
+          data: rollupsToCreate,
+        }) as unknown as ReturnType<typeof prisma.userWeeklyArtistPlaycount.deleteMany>,
+      );
+    }
 
-        const existingRollupByArtist = new Map(existingRollups.map((row) => [row.normalizedName, row.playcount]));
+    batchOps.push(...(rollupUpdates as unknown as Array<ReturnType<typeof prisma.userWeeklyArtistPlaycount.deleteMany>>));
 
-        const rollupsToCreate: Array<{ userAccountId: string; artistName: string; normalizedName: string; playcount: number }> = [];
-        const rollupsToUpdate: Array<{ artistName: string; normalizedName: string; playcount: number }> = [];
-
-        for (const row of deltaByArtist.values()) {
-          const current = existingRollupByArtist.get(row.normalizedName);
-          if (current == null) {
-            if (row.delta > 0) {
-              rollupsToCreate.push({
-                userAccountId,
-                artistName: row.artistName,
-                normalizedName: row.normalizedName,
-                playcount: row.delta,
-              });
-            }
-            continue;
-          }
-
-          const nextPlaycount = Math.max(0, current + row.delta);
-          if (nextPlaycount !== current || row.delta !== 0) {
-            rollupsToUpdate.push({
-              artistName: row.artistName,
-              normalizedName: row.normalizedName,
-              playcount: nextPlaycount,
-            });
-          }
-        }
-
-        if (rollupsToCreate.length > 0) {
-          await tx.userKnownArtistRollup.createMany({
-            data: rollupsToCreate,
-          });
-        }
-
-        for (const row of rollupsToUpdate) {
-          await tx.userKnownArtistRollup.update({
-            where: {
-              userAccountId_normalizedName: {
-                userAccountId,
-                normalizedName: row.normalizedName,
-              },
-            },
-            data: {
-              artistName: row.artistName,
-              playcount: row.playcount,
-            },
-          });
-        }
-      }
-
-      await tx.userWeeklyIngestedWeek.upsert({
+    batchOps.push(
+      prisma.userWeeklyIngestedWeek.upsert({
         where: {
           userAccountId_weekStart_weekEnd: {
             userAccountId,
@@ -387,8 +393,10 @@ async function processSingleWeek(params: {
           lastAttemptAt: new Date(),
           lastErrorMessage: null,
         },
-      });
-    });
+      }) as unknown as ReturnType<typeof prisma.userWeeklyArtistPlaycount.deleteMany>,
+    );
+
+    await prisma.$transaction(batchOps);
 
     return true;
   } catch (error) {
