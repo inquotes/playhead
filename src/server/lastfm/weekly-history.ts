@@ -14,6 +14,7 @@ const LOCK_TTL_MS = 120_000;
 const POLL_INTERVAL_MS = 1_000;
 const RETRY_BASE_MS = 60_000;
 const MAX_CONSECUTIVE_FAILURES = 8;
+const MAX_WEEK_ATTEMPTS = 3;
 
 type WorkflowTrigger = "update_now" | "recent_year_gate" | "watchdog" | "other";
 
@@ -105,6 +106,7 @@ async function enqueueJob(params: { userAccountId: string; username: string; pri
       status: "queued",
       priority: params.priority ?? 100,
       nextRunAt: new Date(),
+      consecutiveFailures: 0,
       lastErrorCode: null,
       lastErrorMessage: null,
     },
@@ -175,21 +177,28 @@ async function heartbeat(userAccountId: string, lockToken: string): Promise<bool
 }
 
 async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Promise<{ recentYearReady: boolean; fullReady: boolean }> {
-  const doneWeeks = await prisma.userWeeklyIngestedWeek.findMany({
-    where: { userAccountId, status: "done" },
-    select: { weekStart: true, weekEnd: true },
+  const settledWeeks = await prisma.userWeeklyIngestedWeek.findMany({
+    where: {
+      userAccountId,
+      OR: [
+        { status: "done" },
+        { status: "failed", attemptCount: { gte: MAX_WEEK_ATTEMPTS } },
+      ],
+    },
+    select: { weekStart: true, weekEnd: true, status: true },
   });
-  const doneSet = new Set(doneWeeks.map((week) => `${week.weekStart}:${week.weekEnd}`));
+  const settledSet = new Set(settledWeeks.map((week) => `${week.weekStart}:${week.weekEnd}`));
+  const doneCount = settledWeeks.filter((w) => w.status === "done").length;
 
   const recentWeeks = weeks.slice(0, Math.min(RECENT_YEAR_WEEK_COUNT, weeks.length));
-  const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => doneSet.has(weekKey(week)));
-  const fullReady = weeks.length > 0 && weeks.every((week) => doneSet.has(weekKey(week)));
+  const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => settledSet.has(weekKey(week)));
+  const fullReady = weeks.length > 0 && weeks.every((week) => settledSet.has(weekKey(week)));
 
   await prisma.userWeeklyListeningState.update({
     where: { userAccountId },
     data: {
       weeksDiscovered: weeks.length,
-      weeksProcessed: doneSet.size,
+      weeksProcessed: doneCount,
       newestWeekStart: weeks[0]?.from ?? null,
       oldestWeekStart: weeks[weeks.length - 1]?.from ?? null,
       recentYearReadyAt: recentYearReady ? new Date() : null,
@@ -425,6 +434,7 @@ async function finishJob(params: {
   lockToken: string;
   fullReady: boolean;
   hadErrors: boolean;
+  madeProgress: boolean;
   existingFailures: number;
 }): Promise<void> {
   const now = new Date();
@@ -465,7 +475,7 @@ async function finishJob(params: {
     return;
   }
 
-  const nextFailureCount = params.hadErrors ? params.existingFailures + 1 : 0;
+  const nextFailureCount = params.hadErrors && !params.madeProgress ? params.existingFailures + 1 : 0;
   const nextStatus = nextFailureCount >= MAX_CONSECUTIVE_FAILURES ? "failed_permanent" : params.hadErrors ? "retry_wait" : "queued";
   const nextRunAt =
     nextStatus === "retry_wait"
@@ -514,6 +524,7 @@ async function runClaimedJob(params: {
 }): Promise<void> {
   const started = Date.now();
   let hadErrors = false;
+  let processedCount = 0;
 
   const existingJob = await prisma.userWeeklyBackfillJob.findUnique({
     where: { userAccountId: params.userAccountId },
@@ -536,17 +547,24 @@ async function runClaimedJob(params: {
           lockToken: params.lockToken,
           fullReady: true,
           hadErrors: false,
+          madeProgress: processedCount > 0,
           existingFailures: existingJob?.consecutiveFailures ?? 0,
         });
         return;
       }
 
-      const doneRows = await prisma.userWeeklyIngestedWeek.findMany({
-        where: { userAccountId: params.userAccountId, status: "done" },
+      const settledRows = await prisma.userWeeklyIngestedWeek.findMany({
+        where: {
+          userAccountId: params.userAccountId,
+          OR: [
+            { status: "done" },
+            { status: "failed", attemptCount: { gte: MAX_WEEK_ATTEMPTS } },
+          ],
+        },
         select: { weekStart: true, weekEnd: true },
       });
-      const doneSet = new Set(doneRows.map((row) => `${row.weekStart}:${row.weekEnd}`));
-      const remaining = weeks.filter((week) => !doneSet.has(weekKey(week)));
+      const settledSet = new Set(settledRows.map((row) => `${row.weekStart}:${row.weekEnd}`));
+      const remaining = weeks.filter((week) => !settledSet.has(weekKey(week)));
 
       if (remaining.length === 0) {
         await refreshProgress(params.userAccountId, weeks);
@@ -555,6 +573,7 @@ async function runClaimedJob(params: {
           lockToken: params.lockToken,
           fullReady: true,
           hadErrors: false,
+          madeProgress: processedCount > 0,
           existingFailures: existingJob?.consecutiveFailures ?? 0,
         });
         return;
@@ -568,6 +587,8 @@ async function runClaimedJob(params: {
         });
         if (!ok) {
           hadErrors = true;
+        } else {
+          processedCount++;
         }
       }
 
@@ -578,6 +599,7 @@ async function runClaimedJob(params: {
           lockToken: params.lockToken,
           fullReady: true,
           hadErrors: false,
+          madeProgress: processedCount > 0,
           existingFailures: existingJob?.consecutiveFailures ?? 0,
         });
         return;
@@ -589,11 +611,12 @@ async function runClaimedJob(params: {
       lockToken: params.lockToken,
       fullReady: false,
       hadErrors,
+      madeProgress: processedCount > 0,
       existingFailures: existingJob?.consecutiveFailures ?? 0,
     });
   } catch (error) {
     const now = new Date();
-    const failures = (existingJob?.consecutiveFailures ?? 0) + 1;
+    const failures = processedCount > 0 ? 0 : (existingJob?.consecutiveFailures ?? 0) + 1;
 
     await prisma.userWeeklyBackfillJob.updateMany({
       where: {
