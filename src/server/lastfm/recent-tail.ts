@@ -32,12 +32,10 @@ export async function refreshRecentTailSnapshot(params: {
       lastErrorMessage: null,
     },
     update: {
+      // Window/count fields are only written on success so state stays coherent with
+      // whichever snapshot rows actually exist if this pull fails.
       lastfmUsername: params.username,
       status: "running",
-      latestWeeklyBoundary: params.latestWeeklyBoundary,
-      tailFrom: from,
-      tailTo: to,
-      artistCount: 0,
       lastPullStartedAt: startedAt,
       lastErrorMessage: null,
     },
@@ -97,20 +95,16 @@ export async function refreshRecentTailSnapshot(params: {
     return rows;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Recent-tail pull failed.";
-    await prisma.$transaction([
-      prisma.userRecentTailArtistCount.deleteMany({
-        where: { userAccountId: params.userAccountId },
-      }),
-      prisma.userRecentTailState.update({
-        where: { userAccountId: params.userAccountId },
-        data: {
-          status: "failed",
-          artistCount: 0,
-          lastErrorMessage: message,
-          lastPullCompletedAt: new Date(),
-        },
-      }),
-    ]);
+    // Keep the prior snapshot rows and their window metadata — a failed pull must not
+    // wipe stored tail data that recommend runs read from the store.
+    await prisma.userRecentTailState.update({
+      where: { userAccountId: params.userAccountId },
+      data: {
+        status: "failed",
+        lastErrorMessage: message,
+        lastPullCompletedAt: new Date(),
+      },
+    });
 
     await recordDataPull({
       userAccountId: params.userAccountId,

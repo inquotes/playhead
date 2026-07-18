@@ -628,7 +628,15 @@ export async function launchAnalyzeRun(params: {
           userAccountId: params.userAccountId,
         });
       } catch {
-        recentTail = [];
+        // Refresh failed but the store keeps the prior snapshot — a slightly stale
+        // tail beats dropping the newest listens entirely.
+        try {
+          recentTail = await getRecentTailArtistCountsFromStore({
+            userAccountId: params.userAccountId,
+          });
+        } catch {
+          recentTail = [];
+        }
       }
 
       if (recentTail.length > 0) {

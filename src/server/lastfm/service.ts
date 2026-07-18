@@ -244,6 +244,27 @@ export async function validateLastfmUser(username: string): Promise<void> {
   );
 }
 
+// Single shared cache entry for a user's weekly chart list. Both the aggregate and
+// latest-boundary reads must share one key AND one TTL — the TTL is not part of the
+// cache key, so divergent TTLs at different call sites let whichever caller writes
+// first pin the expiry for everyone.
+async function getCachedWeeklyChartList(username: string): Promise<unknown> {
+  return readThroughCache(
+    {
+      scope: username.toLowerCase(),
+      method: "user.getWeeklyChartList",
+      params: { user: username },
+      ttlSeconds: 60 * 30,
+    },
+    () => getWeeklyChartList({ user: username }),
+  );
+}
+
+export function latestBoundaryFromWeeks(weeks: Array<{ from: number; to: number }>): number | null {
+  if (weeks.length === 0) return null;
+  return weeks.reduce((latest, week) => Math.max(latest, week.to), 0);
+}
+
 export async function getAggregatedWeeklyArtists(params: {
   username: string;
   from: number;
@@ -260,15 +281,7 @@ export async function getAggregatedWeeklyArtists(params: {
       ttlSeconds: 60 * 60,
     },
     async () => {
-      const chartListRaw = await readThroughCache(
-        {
-          scope,
-          method: "user.getWeeklyChartList",
-          params: { user: username },
-          ttlSeconds: 60 * 60 * 6,
-        },
-        () => getWeeklyChartList({ user: username }),
-      );
+      const chartListRaw = await getCachedWeeklyChartList(username);
 
       const weeks = parseWeeklyChartList(chartListRaw).filter((week) => week.to >= params.from && week.from <= params.to);
 
@@ -303,20 +316,12 @@ export async function getLatestWeeklyChartBoundary(params: {
   username: string;
 }): Promise<number | null> {
   const username = params.username.trim();
-  const scope = username.toLowerCase();
+  const chartListRaw = await getCachedWeeklyChartList(username);
 
-  const chartListRaw = await readThroughCache(
-    {
-      scope,
-      method: "user.getWeeklyChartList",
-      params: { user: username },
-      ttlSeconds: 60 * 30,
-    },
-    () => getWeeklyChartList({ user: username }),
-  );
-
+  // Last.fm returns the chart list oldest-first; pick the max boundary rather than
+  // trusting element order, or the tail window balloons to the whole analysis range.
   const weeks = parseWeeklyChartList(chartListRaw);
-  return weeks[0]?.to ?? null;
+  return latestBoundaryFromWeeks(weeks);
 }
 
 export async function getArtistProfile(params: {

@@ -175,6 +175,25 @@ async function heartbeat(userAccountId: string, lockToken: string): Promise<bool
   return updated.count > 0;
 }
 
+// Readiness timestamps are monotonic: set once on the null -> ready transition, never
+// cleared or overwritten afterward. A new not-yet-ingested chart week must not revoke
+// readiness — the recent-tail merge covers the pending window, so indexed data stays usable.
+export function computeReadinessUpdate(params: {
+  recentYearReady: boolean;
+  fullReady: boolean;
+  current: { recentYearReadyAt: Date | null; fullHistoryReadyAt: Date | null };
+  now: Date;
+}): { recentYearReadyAt?: Date; fullHistoryReadyAt?: Date } {
+  const update: { recentYearReadyAt?: Date; fullHistoryReadyAt?: Date } = {};
+  if (params.recentYearReady && !params.current.recentYearReadyAt) {
+    update.recentYearReadyAt = params.now;
+  }
+  if (params.fullReady && !params.current.fullHistoryReadyAt) {
+    update.fullHistoryReadyAt = params.now;
+  }
+  return update;
+}
+
 async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Promise<{ recentYearReady: boolean; fullReady: boolean }> {
   const attemptedWeeks = await prisma.userWeeklyIngestedWeek.findMany({
     where: { userAccountId },
@@ -187,6 +206,11 @@ async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Pr
   const recentYearReady = recentWeeks.length > 0 && recentWeeks.every((week) => attemptedSet.has(weekKey(week)));
   const fullReady = weeks.length > 0 && weeks.every((week) => attemptedSet.has(weekKey(week)));
 
+  const currentState = await prisma.userWeeklyListeningState.findUnique({
+    where: { userAccountId },
+    select: { recentYearReadyAt: true, fullHistoryReadyAt: true },
+  });
+
   await prisma.userWeeklyListeningState.update({
     where: { userAccountId },
     data: {
@@ -194,8 +218,15 @@ async function refreshProgress(userAccountId: string, weeks: WeeklyWindow[]): Pr
       weeksProcessed: doneCount,
       newestWeekStart: weeks[0]?.from ?? null,
       oldestWeekStart: weeks[weeks.length - 1]?.from ?? null,
-      recentYearReadyAt: recentYearReady ? new Date() : null,
-      fullHistoryReadyAt: fullReady ? new Date() : null,
+      ...computeReadinessUpdate({
+        recentYearReady,
+        fullReady,
+        current: {
+          recentYearReadyAt: currentState?.recentYearReadyAt ?? null,
+          fullHistoryReadyAt: currentState?.fullHistoryReadyAt ?? null,
+        },
+        now: new Date(),
+      }),
       lastSuccessAt: new Date(),
     },
   });
@@ -440,6 +471,11 @@ async function finishJob(params: {
 }): Promise<void> {
   const now = new Date();
   if (params.fullReady) {
+    const currentState = await prisma.userWeeklyListeningState.findUnique({
+      where: { userAccountId: params.userAccountId },
+      select: { fullHistoryReadyAt: true },
+    });
+
     await prisma.userWeeklyBackfillJob.updateMany({
       where: {
         userAccountId: params.userAccountId,
@@ -462,7 +498,7 @@ async function finishJob(params: {
       where: { userAccountId: params.userAccountId },
       data: {
         status: "complete",
-        fullHistoryReadyAt: now,
+        ...(currentState?.fullHistoryReadyAt ? {} : { fullHistoryReadyAt: now }),
         lastSuccessAt: now,
         lastErrorCode: null,
         lastErrorMessage: null,

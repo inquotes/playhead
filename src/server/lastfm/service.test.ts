@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { normalizeArtistName, toNumber, readString } from "./service";
+import { latestBoundaryFromWeeks, normalizeArtistName, toNumber, readString } from "./service";
+
+describe("latestBoundaryFromWeeks", () => {
+  it("returns null for an empty list", () => {
+    expect(latestBoundaryFromWeeks([])).toBeNull();
+  });
+
+  it("returns the newest boundary from an ascending (Last.fm order) list", () => {
+    const weeks = [
+      { from: 100, to: 200 },
+      { from: 200, to: 300 },
+      { from: 300, to: 400 },
+    ];
+    expect(latestBoundaryFromWeeks(weeks)).toBe(400);
+  });
+
+  it("is order-independent", () => {
+    const weeks = [
+      { from: 300, to: 400 },
+      { from: 100, to: 200 },
+      { from: 200, to: 300 },
+    ];
+    expect(latestBoundaryFromWeeks(weeks)).toBe(400);
+  });
+});
 
 describe("normalizeArtistName", () => {
   it("trims and lowercases", () => {

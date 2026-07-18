@@ -22,10 +22,13 @@
 - Backfill status is exposed to authenticated app reads via `GET /api/profile/backfill-status` (workflow-style state + counters + readiness + last error).
 - Weekly ingestion write path batches per-week artist rows (`deleteMany` + `createMany`) and applies rollup deltas in a single batch transaction to reduce D1 write amplification.
 - Failed weeks are skipped for the remainder of the current run but retried on subsequent runs — no permanent data loss from transient API failures.
+- Readiness timestamps (`recentYearReadyAt`, `fullHistoryReadyAt`) are monotonic: set once when coverage is first reached and never cleared or overwritten — a newly published, not-yet-ingested chart week does not revoke readiness (the recent-tail merge covers the pending window).
 - Job-level `consecutiveFailures` only increments when a run makes zero progress; runs that process some weeks successfully reset the counter.
 - All internal worker-to-worker route auth uses a single `QUEUE_PROCESS_SECRET` shared secret.
 - Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.
 - Recent-tail invalid windows now no-op and keep the previous stored snapshot (prevents accidental tail wipe/regression in profile progress counters).
+- Failed recent-tail pulls also preserve the prior snapshot: state is marked `failed` with the error, but stored tail rows and their window metadata remain intact, and analyze falls back to the stored snapshot.
+- The weekly chart list is cached under a single shared entry (30 min TTL) for both aggregate and latest-boundary reads; the latest boundary is the max week end, independent of Last.fm's list ordering.
 - Pull recency telemetry is persisted in `UserDataPullLog` for both weekly backfill and recent-tail pulls; profile "Data Last Updated" reads from this table.
 - Profile supports a manual refresh action (`POST /api/profile/update-now`) that refreshes recent-tail snapshot immediately and kicks weekly backfill progression.
 - Each lane includes compact `LaneContext` data: representative/member artists, tags, and bounded `similarHints` for warm-start recommendation expansion.
