@@ -18,8 +18,12 @@
 - Analyze supports optional `targetUsername` for "analyze another user" while ownership remains tied to authenticated `userAccountId`.
 - Authenticated self-target runs warm and reuse persisted weekly listening history (`UserWeeklyArtistPlaycount` + `UserKnownArtistRollup`) and now refresh a persisted recent-tail snapshot before lane synthesis.
 - Weekly history indexing is workflow-native per user (`WeeklyBackfillWorkflow` + `UserWeeklyBackfillJob`) with watchdog rescue for stale/retry states.
+- Week ingestion uses D1-compatible batch transactions (`prisma.$transaction([...])`) — interactive transactions are not supported on D1.
 - Backfill status is exposed to authenticated app reads via `GET /api/profile/backfill-status` (workflow-style state + counters + readiness + last error).
-- Weekly ingestion write path now batches per-week artist rows (`deleteMany` + `createMany`) and applies rollup deltas transactionally to reduce D1 write amplification.
+- Weekly ingestion write path batches per-week artist rows (`deleteMany` + `createMany`) and applies rollup deltas in a single batch transaction to reduce D1 write amplification.
+- Failed weeks are skipped for the remainder of the current run but retried on subsequent runs — no permanent data loss from transient API failures.
+- Job-level `consecutiveFailures` only increments when a run makes zero progress; runs that process some weeks successfully reset the counter.
+- All internal worker-to-worker route auth uses a single `QUEUE_PROCESS_SECRET` shared secret.
 - Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.
 - Recent-tail invalid windows now no-op and keep the previous stored snapshot (prevents accidental tail wipe/regression in profile progress counters).
 - Pull recency telemetry is persisted in `UserDataPullLog` for both weekly backfill and recent-tail pulls; profile "Data Last Updated" reads from this table.

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Last.fm-powered music discovery app. Users connect their Last.fm account, analyze a listening window to generate 3 "taste lanes" (thematic artist groupings), then get deterministic recommendations within each lane. Deployed at play-head.com.
 
+Product intent: a serious Last.fm discovery tool. Recommendations should feel new-to-you while staying musically coherent with the selected lane.
+
 ## Commands
 
 ```bash
@@ -63,12 +65,32 @@ npm run bench:llm                # LLM latency benchmark
 - Persist one recommendation run per lane per analysis; refresh replaces prior lane result
 - Empty seed lanes should short-circuit quickly (no long-running expansion)
 
+## UX Guardrails
+
+- Avoid exposing backend internals in user copy
+- Keep progress labels simple and user-facing
+- Keep lane descriptions rich, listener-friendly, and non-technical
+- Rehydrate/revisit should feel smooth (avoid landing-page flash before restored state appears)
+
+## Performance Priorities
+
+- Analyze can be heavier; recommend should be lean — reuse cached data and persisted lane context aggressively, and avoid unnecessary Last.fm calls in recommendation runs
+- Enforce run timeouts and fail fast with clear user-visible errors
+
+## Done Checklist
+
+- Type-safe changes and readable code; lint/build pass
+- No regression to MCP-first logic
+- Update `ai-agent/system-overview.md` if architecture behavior changes
+
 ## Additional Context
 
-Read `ai-agent/session-context.md` for current rules, guardrails, and roadmap focus. Read `ai-agent/system-overview.md` for detailed request flows and runtime model. The `ai-agent/todos.md` file has the current backlog.
+Read `ai-agent/system-overview.md` for detailed request flows and the runtime model. Local-only working notes live in the untracked `docs/` folder: `docs/todos.md` (current backlog) and `docs/worklog.md` (current focus + recent work).
 
 ## Environment Setup
 
-Copy `.env.example` → `.env` and set: `OPENAI_API_KEY`, `LASTFM_API_KEY`, `LASTFM_API_SECRET`, `LASTFM_SESSION_ENCRYPTION_KEY`. Then `npm run db:push` to initialize local SQLite.
+Copy `.env.example` → `.env` and set: `OPENAI_API_KEY`, `LASTFM_API_KEY`, `LASTFM_API_SECRET`, `LASTFM_SESSION_ENCRYPTION_KEY`, `QUEUE_PROCESS_SECRET`. Then `npm run db:push` to initialize local SQLite.
+
+`QUEUE_PROCESS_SECRET` is the single shared secret for all internal worker-to-worker route auth (queue processing, backfill workflow, stale sweeper). It must be set in Wrangler secrets for production.
 
 TypeScript path alias: `@/*` maps to `src/*`.
