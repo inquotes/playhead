@@ -17,14 +17,16 @@ function getCloudflareD1Binding(): unknown | null {
 }
 
 const cloudflareD1Binding = getCloudflareD1Binding();
+type PrismaD1Parameter = ConstructorParameters<typeof PrismaD1>[0];
+type PrismaAdapter = NonNullable<Prisma.PrismaClientOptions["adapter"]>;
 
 function createPrismaClient(d1Binding: unknown | null = cloudflareD1Binding) {
   const log: Prisma.LogLevel[] = process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"];
   if (d1Binding) {
     return new PrismaClient({
-      adapter: new PrismaD1(d1Binding as any),
+      adapter: new PrismaD1(d1Binding as PrismaD1Parameter) as unknown as PrismaAdapter,
       log,
-    } as any);
+    });
   }
 
   return new PrismaClient({ log });

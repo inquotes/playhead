@@ -99,6 +99,7 @@ model RecommendationRun {
   createdAt        DateTime       @default(now())
 
   @@index([analysisRunId, createdAt])
+  @@unique([analysisRunId, selectedLane])
 }
 
 model AgentRun {

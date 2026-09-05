@@ -80,10 +80,10 @@ Production auth reliability:
 npm run build
 ```
 
-- Lint:
+- Run the source checks:
 
 ```bash
-npm run lint
+npm run check
 ```
 
 - D1 schema migrations use Prisma diff + Wrangler apply scripts in `package.json`.

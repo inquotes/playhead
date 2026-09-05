@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
+import { getCurrentArtistPlaycounts } from "@/server/listening-history/service";
 import { DiscoveryListSection } from "../discovery-list-section";
 
 export default async function DiscoveryListPage() {
@@ -24,38 +25,13 @@ export default async function DiscoveryListPage() {
   });
 
   const savedNames = [...new Set(savedArtists.map((artist) => artist.normalizedName))];
-  const [rollupRows, tailRows] = await Promise.all([
-    savedNames.length
-      ? prisma.userKnownArtistRollup.findMany({
-          where: {
-            userAccountId: user.id,
-            normalizedName: { in: savedNames },
-          },
-          select: {
-            normalizedName: true,
-            playcount: true,
-          },
-        })
-      : Promise.resolve([]),
-    savedNames.length
-      ? prisma.userRecentTailArtistCount.findMany({
-          where: {
-            userAccountId: user.id,
-            normalizedName: { in: savedNames },
-          },
-          select: {
-            normalizedName: true,
-            playcount: true,
-          },
-        })
-      : Promise.resolve([]),
-  ]);
-
-  const currentPlaycountByName = new Map(rollupRows.map((row) => [row.normalizedName, row.playcount]));
-  for (const row of tailRows) {
-    const previous = currentPlaycountByName.get(row.normalizedName) ?? 0;
-    currentPlaycountByName.set(row.normalizedName, previous + row.playcount);
-  }
+  const currentPlaycounts = await getCurrentArtistPlaycounts({
+    userAccountId: user.id,
+    normalizedNames: savedNames,
+  });
+  const currentPlaycountByName = new Map(
+    currentPlaycounts.map((row) => [row.normalizedName, row.playcount]),
+  );
 
   return (
     <DiscoveryListSection

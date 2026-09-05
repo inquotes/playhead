@@ -1,3 +1,9 @@
+import { normalizeArtistName, uniqueArtists } from "@/lib/artists";
+import type { AgentRunStatus, Lane, Recommendation } from "@/lib/discovery-contracts";
+
+export { normalizeArtistName, uniqueArtists };
+export type { Lane, Recommendation } from "@/lib/discovery-contracts";
+
 export type ConnectionStatus = {
   isAuthenticated: boolean;
   user: {
@@ -8,33 +14,10 @@ export type ConnectionStatus = {
   } | null;
 };
 
-export type Lane = {
-  id: string;
-  name: string;
-  description: string;
-  whyThisLane: string;
-  confidence: number;
-  artists: string[];
-  tags: string[];
-  totalPlays: number;
-  memberArtists?: string[];
-  similarHints?: Array<{ artistName: string; normalizedName: string; supportSeeds: string[]; aggregateMatch: number }>;
-};
-
-export type Recommendation = {
-  artist: string;
-  score: number;
-  reason?: string;
-  blurb?: string;
-  recommendedAlbum?: string | null;
-  matchSource: string;
-  tags: string[];
-};
-
 export type AgentRun = {
   id: string;
   mode: "analyze" | "recommend";
-  status: "queued" | "running" | "completed" | "failed";
+  status: AgentRunStatus;
   result: unknown;
   errorMessage: string | null;
 };
@@ -126,24 +109,6 @@ export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> 
     throw new Error((data as { message?: string }).message ?? "Request failed.");
   }
   return data;
-}
-
-export function uniqueArtists(list: string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const artist of list) {
-    const trimmed = artist.trim();
-    if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(trimmed);
-  }
-  return unique;
-}
-
-export function normalizeArtistName(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 export type RunResult = {

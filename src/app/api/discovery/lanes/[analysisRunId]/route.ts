@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
-import type { Lane } from "@/server/discovery/types";
+import { decodeAnalysisLanesPayload } from "@/server/discovery/payloads";
 
 type Params = {
   params: Promise<{ analysisRunId: string }>;
@@ -32,14 +32,7 @@ export async function GET(_: Request, context: Params) {
       return attachVisitorCookie(response, visitorContext);
     }
 
-    const lanePayload = run.lanesJson as unknown as
-      | { summary?: string; notablePatterns?: string[]; lanes?: Lane[]; trace?: unknown }
-      | Lane[];
-
-    const lanes = Array.isArray(lanePayload) ? lanePayload : (lanePayload.lanes ?? []);
-    const summary = Array.isArray(lanePayload) ? null : (lanePayload.summary ?? null);
-    const notablePatterns = Array.isArray(lanePayload) ? [] : (lanePayload.notablePatterns ?? []);
-    const trace = Array.isArray(lanePayload) ? null : (lanePayload.trace ?? null);
+    const { lanes, summary, notablePatterns, trace } = decodeAnalysisLanesPayload(run.lanesJson);
 
     const response = NextResponse.json({
       ok: true,

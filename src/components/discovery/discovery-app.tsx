@@ -6,7 +6,6 @@ import {
   type ConnectionStatus,
   type HistoryAnalysisResponse,
   type Recommendation,
-  type RangeOptionId,
   type SavedArtistRecord,
   type UsernameValidationResponse,
   jsonFetch,
@@ -20,6 +19,7 @@ import { TimeSelectView } from "./time-select-view";
 import { AnalyzingView } from "./analyzing-view";
 import { ClustersView } from "./clusters-view";
 import { ClusterDetailView } from "./cluster-detail-view";
+import { buildAnalyzeRequest } from "./analyze-request";
 
 export function DiscoveryApp() {
   const [state, dispatch] = useReducer(discoveryReducer, initialState);
@@ -294,20 +294,19 @@ export function DiscoveryApp() {
       }
     }
 
-    let requestBody: { preset: RangeOptionId; from?: number; to?: number; targetUsername?: string } = { preset: s.selectedRange };
-    if (s.target.mode) {
-      requestBody.targetUsername = s.target.usernameResolved!;
-    }
-
-    if (s.selectedRange === "custom") {
-      const { startYear, startMonth, endYear, endMonth } = s.customRange;
-      if (!customRangeIsValid || !startYear || !startMonth || !endYear || !endMonth) {
-        dispatch({ type: "ANALYSIS_VALIDATION_FAIL", error: "Please choose a valid start and end month." });
-        return;
-      }
-      const from = Math.floor(Date.UTC(startYear, startMonth - 1, 1, 0, 0, 0) / 1000);
-      const to = Math.floor(Date.UTC(endYear, endMonth, 0, 23, 59, 59) / 1000);
-      requestBody = { preset: "custom", from, to };
+    let requestBody;
+    try {
+      requestBody = buildAnalyzeRequest({
+        preset: s.selectedRange,
+        customRange: s.customRange,
+        targetUsername: s.target.mode ? s.target.usernameResolved : null,
+      });
+    } catch (error) {
+      dispatch({
+        type: "ANALYSIS_VALIDATION_FAIL",
+        error: error instanceof Error ? error.message : "Please choose a valid start and end month.",
+      });
+      return;
     }
 
     try {

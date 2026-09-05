@@ -1,5 +1,7 @@
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
+import { DISCOVERY_PLAYCOUNT_THRESHOLD, normalizeArtistName } from "@/lib/artists";
+import { mapWithConcurrency } from "@/lib/async";
 import { getOpenAIClient, getOpenAIModel, getOpenAIReasoningEffort } from "@/server/ai/client";
 import { classifyLanes } from "@/server/discovery/classifier";
 import type {
@@ -50,9 +52,7 @@ const explanationSchema = z.object({
   explanations: z.array(z.object({ artist: z.string().min(1).max(80), blurb: z.string().min(1).max(220) })).min(1).max(8),
 });
 
-export function normalizeArtist(value: string): string {
-  return value.trim().toLowerCase();
-}
+export const normalizeArtist = normalizeArtistName;
 
 function slugify(value: string): string {
   return value
@@ -196,7 +196,6 @@ function cleanBioSnippet(value: string): string {
 }
 
 async function buildLaneSimilarHints(params: {
-  username: string;
   lane: Lane;
   perSeedLimit?: number;
   maxHints?: number;
@@ -207,12 +206,12 @@ async function buildLaneSimilarHints(params: {
 
   const hintsByArtist = new Map<string, SimilarArtistHint>();
 
-  for (const seed of seedArtists) {
-    const similar = await getSimilarArtistProfiles({
-      artistName: seed,
-      username: params.username,
-      limit: perSeedLimit,
-    });
+  const similarBySeed = await mapWithConcurrency(seedArtists, 4, (seed) =>
+    getSimilarArtistProfiles({ artistName: seed, limit: perSeedLimit }),
+  );
+
+  for (const [index, seed] of seedArtists.entries()) {
+    const similar = similarBySeed[index];
 
     for (const match of similar) {
       const seedNormalized = normalizeArtist(seed);
@@ -259,11 +258,10 @@ export function laneToContext(lane: Lane): LaneContext {
   };
 }
 
-async function attachSimilarHintsToLanes(params: { username: string; lanes: Lane[] }): Promise<Lane[]> {
+async function attachSimilarHintsToLanes(params: { lanes: Lane[] }): Promise<Lane[]> {
   return Promise.all(
     params.lanes.map(async (lane) => {
       const similarHints = await buildLaneSimilarHints({
-        username: params.username,
         lane,
       });
 
@@ -343,9 +341,11 @@ export async function buildListeningSnapshot(params: {
 
   const knownPlayMap = new Map(knownArtists.map((item) => [item.normalizedName, item.playcount]));
 
-  const artistProfiles: ArtistProfile[] = await Promise.all(
-    topArtists.slice(0, MAX_PROFILED_ARTISTS).map(async (artist) => {
-      const profile = await getArtistProfile({ artistName: artist.artistName, username: params.username });
+  const artistProfiles: ArtistProfile[] = await mapWithConcurrency(
+    topArtists.slice(0, MAX_PROFILED_ARTISTS),
+    6,
+    async (artist) => {
+      const profile = await getArtistProfile({ artistName: artist.artistName });
       return {
         artistName: artist.artistName,
         normalizedName: artist.normalizedName,
@@ -358,7 +358,7 @@ export async function buildListeningSnapshot(params: {
           bioSnippet: profile.bio.slice(0, 220),
         },
       };
-    }),
+    },
   );
 
   const totalPlays = topArtists.reduce((sum, artist) => sum + artist.periodPlaycount, 0);
@@ -582,7 +582,6 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
 
     const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
-      username: snapshot.username,
       lanes: mapTasteLanesToUi(lanes),
     });
     const similarHintsMs = Date.now() - hintsStart;
@@ -613,7 +612,6 @@ export async function synthesizeTasteLanes(snapshot: ListeningSnapshot): Promise
     const fallback = buildFallbackLanes(snapshot);
     const hintsStart = Date.now();
     const lanesWithHints = await attachSimilarHintsToLanes({
-      username: snapshot.username,
       lanes: mapTasteLanesToUi(fallback.lanes),
     });
     const similarHintsMs = Date.now() - hintsStart;
@@ -658,7 +656,7 @@ export function rankCandidate(params: {
   const noveltyScore =
     params.knownPlaycount === null
       ? 16
-      : params.knownPlaycount < 10
+      : params.knownPlaycount < DISCOVERY_PLAYCOUNT_THRESHOLD
         ? Math.max(0, 14 - params.knownPlaycount)
         : -30;
   const listenerScore = params.listeners && params.listeners > 0 ? Math.max(0, 8 - Math.log10(params.listeners)) : 0;
@@ -670,7 +668,7 @@ export function rankCandidate(params: {
     tagOverlap > 0 ? `Shares ${tagOverlap} lane tag${tagOverlap === 1 ? "" : "s"}.` : "Primary signal is artist-neighborhood similarity.",
     params.knownPlaycount === null
       ? "Not found in broad known-history scan."
-      : params.knownPlaycount < 10
+      : params.knownPlaycount < DISCOVERY_PLAYCOUNT_THRESHOLD
         ? `Known lightly (${params.knownPlaycount} plays all-time), treated as discovery-eligible.`
         : `Known heavily (${params.knownPlaycount} plays all-time), penalized.`,
   ];
@@ -889,8 +887,11 @@ export async function generateDeterministicRecommendations(params: {
   const candidateSeedMergeMs = Date.now() - seedMergeStart;
 
   const similarExpansionStart = Date.now();
-  for (const seed of seedArtists) {
-    const similar = await getSimilarArtistProfiles({ artistName: seed, username: params.username, limit: 24 });
+  const similarBySeed = await mapWithConcurrency(seedArtists, 4, (seed) =>
+    getSimilarArtistProfiles({ artistName: seed, limit: 24 }),
+  );
+  for (const [index, seed] of seedArtists.entries()) {
+    const similar = similarBySeed[index];
     for (const match of similar) {
       upsertCandidate({
         normalizedName: match.normalizedName,
@@ -908,12 +909,18 @@ export async function generateDeterministicRecommendations(params: {
     .sort((a, b) => b.supportMatchTotal - a.supportMatchTotal)
     .slice(0, 30);
 
-  const recommendationCandidates: RecommendationCandidate[] = [];
-
   const profileEnrichmentStart = Date.now();
-  for (const candidate of rankedCandidates) {
+  const recommendationCandidates = await mapWithConcurrency(rankedCandidates, 6, async (candidate) => {
     const knownPlaycount = knownPlayMap.get(candidate.normalizedName) ?? null;
-    const profile = await getArtistProfile({ artistName: candidate.artistName, username: params.username });
+    const profile = await getArtistProfile({ artistName: candidate.artistName }).catch(() => ({
+      artistName: candidate.artistName,
+      normalizedName: candidate.normalizedName,
+      tags: [],
+      similarArtists: [],
+      listeners: null,
+      userPlaycount: null,
+      bio: "",
+    }));
 
     const rank = rankCandidate({
       supportCount: candidate.supportSeeds.size,
@@ -924,9 +931,9 @@ export async function generateDeterministicRecommendations(params: {
       listeners: profile.listeners,
     });
 
-    const excluded = (knownPlaycount ?? 0) >= 10;
+    const excluded = (knownPlaycount ?? 0) >= DISCOVERY_PLAYCOUNT_THRESHOLD;
 
-    recommendationCandidates.push({
+    return {
       artistName: candidate.artistName,
       normalizedName: candidate.normalizedName,
       supportingSeedArtists: [...candidate.supportSeeds],
@@ -940,8 +947,8 @@ export async function generateDeterministicRecommendations(params: {
         knownPlaycount,
         supportMatchTotal: candidate.supportMatchTotal,
       },
-    });
-  }
+    } satisfies RecommendationCandidate;
+  });
   const profileEnrichmentMs = Date.now() - profileEnrichmentStart;
 
   const selected = recommendationCandidates
@@ -1009,12 +1016,10 @@ export async function generateDeterministicRecommendations(params: {
 
   const albumLookupStart = Date.now();
   const albumByArtist = new Map<string, string | null>();
-  await Promise.all(
-    selected.map(async (candidate) => {
-      const album = await getArtistTopAlbumSuggestion({ artistName: candidate.artistName });
-      albumByArtist.set(normalizeArtist(candidate.artistName), album);
-    }),
-  );
+  await mapWithConcurrency(selected, 4, async (candidate) => {
+    const album = await getArtistTopAlbumSuggestion({ artistName: candidate.artistName }).catch(() => null);
+    albumByArtist.set(normalizeArtist(candidate.artistName), album);
+  });
   const albumLookupMs = Date.now() - albumLookupStart;
 
   const recommendations = baseRecommendations.map((recommendation) => ({

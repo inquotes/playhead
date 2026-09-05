@@ -1,3 +1,7 @@
+import type { Recommendation, SimilarArtistHint } from "@/lib/discovery-contracts";
+
+export type { Lane, Recommendation, SimilarArtistHint } from "@/lib/discovery-contracts";
+
 export type TimeWindow = {
   preset: "7d" | "1m" | "6m" | "1y" | "custom";
   from: number;
@@ -51,13 +55,6 @@ export type TasteLane = {
   };
 };
 
-export type SimilarArtistHint = {
-  artistName: string;
-  normalizedName: string;
-  supportSeeds: string[];
-  aggregateMatch: number;
-};
-
 export type LaneContext = {
   laneId: string;
   label: string;
@@ -77,17 +74,6 @@ export type RecommendationCandidate = {
   status: "included" | "excluded";
   finalScore: number;
   metadata: Record<string, unknown>;
-};
-
-export type Recommendation = {
-  artist: string;
-  score: number;
-  reason: string;
-  blurb: string;
-  recommendedAlbum?: string | null;
-  matchSource: string;
-  tags: string[];
-  evidence: string[];
 };
 
 export type RecommendationResult = {
@@ -117,21 +103,6 @@ export type RecommendationResult = {
       usedFallback: boolean;
     };
   };
-};
-
-export type Lane = {
-  id: string;
-  name: string;
-  description: string;
-  whyThisLane: string;
-  confidence: number;
-  artists: string[];
-  tags: string[];
-  totalPlays: number;
-  sourceWindow?: string;
-  memberArtists?: string[];
-  evidence?: string[];
-  similarHints?: SimilarArtistHint[];
 };
 
 export type ArtistWithTags = {

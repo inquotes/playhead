@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
-import type { Lane } from "@/server/discovery/types";
+import { decodeAnalysisLanesPayload, decodeRecommendationResults } from "@/server/discovery/payloads";
 
 type Params = {
   params: Promise<{ analysisRunId: string }>;
@@ -48,11 +47,7 @@ export async function GET(_: Request, context: Params) {
       return attachVisitorCookie(response, visitorContext);
     }
 
-    const lanePayload = run.lanesJson as unknown as
-      | { summary?: string; notablePatterns?: string[]; lanes?: Lane[] }
-      | Lane[];
-    const lanes = Array.isArray(lanePayload) ? lanePayload : (lanePayload.lanes ?? []);
-    const summary = Array.isArray(lanePayload) ? null : (lanePayload.summary ?? null);
+    const { lanes, summary } = decodeAnalysisLanesPayload(run.lanesJson);
 
     const response = NextResponse.json({
       ok: true,
@@ -66,13 +61,13 @@ export async function GET(_: Request, context: Params) {
       summary,
       lanes,
       recommendationRuns: run.recommendationRuns.map((rec) => {
-        const payload = rec.resultsJson as Prisma.JsonObject;
+        const payload = decodeRecommendationResults(rec.resultsJson);
         return {
           id: rec.id,
           selectedLane: rec.selectedLane,
           createdAt: rec.createdAt,
-          strategyNote: typeof payload.strategyNote === "string" ? payload.strategyNote : null,
-          recommendations: Array.isArray(payload.recommendations) ? payload.recommendations : [],
+          strategyNote: payload.strategyNote,
+          recommendations: payload.recommendations,
         };
       }),
     });

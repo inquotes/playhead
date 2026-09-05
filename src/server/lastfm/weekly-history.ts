@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { normalizeArtistName } from "@/lib/artists";
 import { getWeeklyArtistChart, getWeeklyChartList } from "@/lib/lastfm";
 import { prisma } from "@/server/db";
 import { recordDataPull } from "@/server/lastfm/data-pulls";
@@ -16,10 +17,6 @@ const RETRY_BASE_MS = 60_000;
 const MAX_CONSECUTIVE_FAILURES = 8;
 
 type WorkflowTrigger = "update_now" | "recent_year_gate" | "watchdog" | "other";
-
-function normalizeArtistName(value: string): string {
-  return value.trim().toLowerCase();
-}
 
 function toNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -904,20 +901,6 @@ export async function ensureRecentYearHistory(params: {
     select: { recentYearReadyAt: true },
   });
   return { coverage: state?.recentYearReadyAt ? "full_recent_year" : "partial" };
-}
-
-export async function getKnownArtistsFromWeeklyRollup(params: {
-  userAccountId: string;
-}): Promise<Array<{ artistName: string; normalizedName: string; playcount: number }>> {
-  return prisma.userKnownArtistRollup.findMany({
-    where: { userAccountId: params.userAccountId },
-    orderBy: { playcount: "desc" },
-    select: {
-      artistName: true,
-      normalizedName: true,
-      playcount: true,
-    },
-  });
 }
 
 export function isRangeWithinRecentYear(from: number, to: number): boolean {

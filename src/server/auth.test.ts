@@ -13,7 +13,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  delete process.env.LASTFM_SESSION_ENCRYPTION_KEY;
+  Reflect.deleteProperty(process.env, "LASTFM_SESSION_ENCRYPTION_KEY");
 });
 
 describe("auth state token", () => {

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
+import { DISCOVERY_PLAYCOUNT_THRESHOLD } from "@/lib/artists";
+import { getCurrentArtistPlaycounts } from "@/server/listening-history/service";
 import { LogoutButton } from "./logout-button";
 import { UpdateNowButton } from "./update-now-button";
 
@@ -58,21 +60,8 @@ export default async function ProfilePage() {
 
   const name = user.displayName ?? user.lastfmUsername;
   const connectedAtLabel = formatConnectedAt(user.lastLoginAt ?? user.createdAt);
-  const [knownArtistRollupRows, recentTailRows, weeklyState, latestDataPull, savedArtists] = await Promise.all([
-    prisma.userKnownArtistRollup.findMany({
-      where: { userAccountId: user.id },
-      select: {
-        normalizedName: true,
-        playcount: true,
-      },
-    }),
-    prisma.userRecentTailArtistCount.findMany({
-      where: { userAccountId: user.id },
-      select: {
-        normalizedName: true,
-        playcount: true,
-      },
-    }),
+  const [currentPlaycounts, weeklyState, latestDataPull, savedArtists] = await Promise.all([
+    getCurrentArtistPlaycounts({ userAccountId: user.id }),
     prisma.userWeeklyListeningState.findUnique({
       where: { userAccountId: user.id },
       select: {
@@ -102,44 +91,18 @@ export default async function ProfilePage() {
     }),
   ]);
 
-  const mergedPlaycountByName = new Map<string, number>();
-  for (const row of knownArtistRollupRows) {
-    mergedPlaycountByName.set(row.normalizedName, row.playcount);
-  }
-  for (const row of recentTailRows) {
-    const previous = mergedPlaycountByName.get(row.normalizedName) ?? 0;
-    mergedPlaycountByName.set(row.normalizedName, previous + row.playcount);
-  }
+  const mergedPlaycountByName = new Map(
+    currentPlaycounts.map((row) => [row.normalizedName, row.playcount]),
+  );
 
   const totalHistoryArtists = mergedPlaycountByName.size;
   const exploredArtists = [...mergedPlaycountByName.values()].reduce((count, playcount) => {
-    return playcount >= 10 ? count + 1 : count;
+    return playcount >= DISCOVERY_PLAYCOUNT_THRESHOLD ? count + 1 : count;
   }, 0);
 
   const savedArtistCount = savedArtists.length;
-  const savedNames = [...new Set(savedArtists.map((artist) => artist.normalizedName))];
-  const savedNameSet = new Set(savedNames);
-  const savedArtistRollups = savedNames.length
-    ? await prisma.userKnownArtistRollup.findMany({
-        where: {
-          userAccountId: user.id,
-          normalizedName: { in: savedNames },
-        },
-        select: {
-          normalizedName: true,
-          playcount: true,
-        },
-      })
-    : [];
-
-  const currentPlaycountByName = new Map(savedArtistRollups.map((row) => [row.normalizedName, row.playcount]));
-  for (const row of recentTailRows) {
-    if (!savedNameSet.has(row.normalizedName)) continue;
-    const previous = currentPlaycountByName.get(row.normalizedName) ?? 0;
-    currentPlaycountByName.set(row.normalizedName, previous + row.playcount);
-  }
   const progressedSavedArtists = savedArtists.reduce((count, artist) => {
-    const currentPlaycount = currentPlaycountByName.get(artist.normalizedName) ?? 0;
+    const currentPlaycount = mergedPlaycountByName.get(artist.normalizedName) ?? 0;
     if (artist.knownPlaycountAtSave == null) {
       return currentPlaycount > 0 ? count + 1 : count;
     }
@@ -147,8 +110,8 @@ export default async function ProfilePage() {
     return currentPlaycount > artist.knownPlaycountAtSave ? count + 1 : count;
   }, 0);
   const exploredSavedArtists = savedArtists.reduce((count, artist) => {
-    const currentPlaycount = currentPlaycountByName.get(artist.normalizedName) ?? 0;
-    return currentPlaycount >= 10 ? count + 1 : count;
+    const currentPlaycount = mergedPlaycountByName.get(artist.normalizedName) ?? 0;
+    return currentPlaycount >= DISCOVERY_PLAYCOUNT_THRESHOLD ? count + 1 : count;
   }, 0);
 
   const weeksProcessed = weeklyState?.weeksProcessed ?? 0;

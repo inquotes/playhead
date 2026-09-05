@@ -354,7 +354,7 @@ export class WeeklyBackfillWorkflow extends WorkflowEntrypoint<QueueEnv, WeeklyB
   }
 }
 
-export default {
+const worker = {
   async fetch(request: Request, env: QueueEnv, ctx: ExecutionContext) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/__internal/workflows/weekly-backfill/trigger") {
@@ -384,9 +384,11 @@ export default {
       }
     }
   },
-  async scheduled(_controller: ScheduledController, env: QueueEnv, _ctx: ExecutionContext) {
+  async scheduled(_controller: ScheduledController, env: QueueEnv) {
     await runStaleDiscoverySweep(env);
   },
 };
+
+export default worker;
 
 export { DOQueueHandler, DOShardedTagCache };

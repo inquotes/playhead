@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { DISCOVERY_PLAYCOUNT_THRESHOLD, normalizeArtistName } from "@/lib/artists";
 import { getCurrentUserAccount } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
+import { getCurrentArtistPlaycount } from "@/server/listening-history/service";
 
 const recommendationContextSchema = z.object({
   blurb: z.string().trim().min(1).max(320).optional(),
@@ -21,10 +23,6 @@ const createSavedArtistSchema = z.object({
   knownArtistAtSave: z.boolean().optional(),
   recommendationContext: recommendationContextSchema.optional(),
 });
-
-function normalizeArtistName(value: string): string {
-  return value.trim().toLowerCase();
-}
 
 export async function GET() {
   try {
@@ -75,18 +73,10 @@ export async function POST(request: Request) {
     const payload = createSavedArtistSchema.parse(await request.json());
     const artistName = payload.artistName.trim();
     const normalizedName = normalizeArtistName(artistName);
-    const rollupAtSave = await prisma.userKnownArtistRollup.findUnique({
-      where: {
-        userAccountId_normalizedName: {
-          userAccountId: user.id,
-          normalizedName,
-        },
-      },
-      select: {
-        playcount: true,
-      },
+    const knownPlaycountAtSave = await getCurrentArtistPlaycount({
+      userAccountId: user.id,
+      normalizedName,
     });
-    const knownPlaycountAtSave = rollupAtSave?.playcount ?? 0;
     const recommendationContext = payload.recommendationContext
       ? {
           blurb: payload.recommendationContext.blurb,
@@ -119,7 +109,7 @@ export async function POST(request: Request) {
       }
       if (existing.knownPlaycountAtSave == null) {
         updateData.knownPlaycountAtSave = knownPlaycountAtSave;
-        updateData.knownArtistAtSave = knownPlaycountAtSave >= 10;
+        updateData.knownArtistAtSave = knownPlaycountAtSave >= DISCOVERY_PLAYCOUNT_THRESHOLD;
       }
 
       const updated =
@@ -161,7 +151,7 @@ export async function POST(request: Request) {
         savedFromLaneId: payload.savedFromLaneId,
         savedFromTargetUsername: payload.savedFromTargetUsername,
         knownPlaycountAtSave,
-        knownArtistAtSave: knownPlaycountAtSave >= 10,
+        knownArtistAtSave: knownPlaycountAtSave >= DISCOVERY_PLAYCOUNT_THRESHOLD,
         recommendationContextJson: recommendationContext as Prisma.InputJsonValue,
       },
       select: {

@@ -1,4 +1,6 @@
-export type RangePreset = "7d" | "1m" | "6m" | "1y" | "custom";
+import type { RangePreset } from "@/lib/discovery-contracts";
+
+export type { RangePreset } from "@/lib/discovery-contracts";
 
 function formatMonthYear(timestampSec: number): string {
   const date = new Date(timestampSec * 1000);

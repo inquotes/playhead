@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
-import { z } from "zod";
+import { mergeArtistPlaycounts } from "@/lib/artists";
+import {
+  analyzeDiscoveryRequestSchema,
+  recommendDiscoveryRequestSchema,
+} from "@/lib/discovery-contracts";
 import { prisma } from "@/server/db";
 import { type RangePreset, resolveRange } from "@/server/discovery/range";
 import {
@@ -8,36 +12,21 @@ import {
   laneToContext,
   synthesizeTasteLanes,
 } from "@/server/discovery/pipeline";
-import type { Lane } from "@/server/discovery/types";
+import { replaceRecommendationRun } from "@/server/discovery/repository";
+import { decodeAnalysisLanesPayload } from "@/server/discovery/payloads";
 import { getKnownArtists } from "@/server/lastfm/service";
 import {
   ensureRecentYearHistory,
   ensureWeeklyHistoryInBackground,
   getAggregatedWeeklyArtistsFromStore,
   getLatestCompletedWeekEndFromStore,
-  getKnownArtistsFromWeeklyRollup,
   isRangeWithinRecentYear,
 } from "@/server/lastfm/weekly-history";
 import {
   getRecentTailArtistCountsFromStore,
   refreshRecentTailSnapshot,
 } from "@/server/lastfm/recent-tail";
-
-export function mergeArtistPlaycounts(
-  base: Array<{ artistName: string; normalizedName: string; playcount: number }>,
-  delta: Array<{ artistName: string; normalizedName: string; playcount: number }>,
-): Array<{ artistName: string; normalizedName: string; playcount: number }> {
-  const merged = new Map(base.map((row) => [row.normalizedName, { ...row }]));
-  for (const row of delta) {
-    const existing = merged.get(row.normalizedName);
-    if (existing) {
-      existing.playcount += row.playcount;
-    } else {
-      merged.set(row.normalizedName, { ...row });
-    }
-  }
-  return [...merged.values()].sort((a, b) => b.playcount - a.playcount);
-}
+import { getCurrentArtistPlaycounts } from "@/server/listening-history/service";
 
 type RunEventAppender = (event: {
   type: string;
@@ -194,84 +183,6 @@ async function ensureRunStillActive(runId: string) {
   if (run.status !== "running") {
     throw new RunNoLongerActiveError(`Run is no longer active (${run.status}).`);
   }
-}
-
-const analyzeRequestSchema = z.object({
-  preset: z.enum(["7d", "1m", "6m", "1y", "custom"]),
-  from: z.number().int().optional(),
-  to: z.number().int().optional(),
-  targetUsername: z.string().trim().min(2).max(64).optional(),
-});
-
-const recommendRequestSchema = z.object({
-  analysisRunId: z.string().min(1),
-  laneId: z.string().min(1),
-  limit: z.number().int().min(1).max(8).default(4),
-});
-
-type StartGuardResult =
-  | { ok: true }
-  | {
-      ok: false;
-      reason: "duplicate_run" | "rate_limited";
-      message: string;
-      activeRunId?: string;
-      activeRunStatus?: string;
-      retryAfterSeconds?: number;
-    };
-
-export async function guardDiscoveryRunStart(params: {
-  userAccountId: string;
-  mode: "analyze" | "recommend";
-  now?: Date;
-}): Promise<StartGuardResult> {
-  const now = params.now ?? new Date();
-  const windowMsRaw = Number(process.env.DISCOVERY_START_RATE_LIMIT_WINDOW_MS ?? 120_000);
-  const maxStartsRaw = Number(process.env.DISCOVERY_START_RATE_LIMIT_MAX ?? 6);
-  const windowMs = Number.isFinite(windowMsRaw) ? Math.max(10_000, Math.floor(windowMsRaw)) : 120_000;
-  const maxStarts = Number.isFinite(maxStartsRaw) ? Math.max(1, Math.floor(maxStartsRaw)) : 6;
-  const windowStart = new Date(now.getTime() - windowMs);
-
-  const [activeRun, startCountInWindow] = await prisma.$transaction([
-    prisma.agentRun.findFirst({
-      where: {
-        userAccountId: params.userAccountId,
-        mode: params.mode,
-        status: { in: ["queued", "running", "cancel_requested"] },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true, status: true },
-    }),
-    prisma.agentRun.count({
-      where: {
-        userAccountId: params.userAccountId,
-        mode: params.mode,
-        createdAt: { gte: windowStart },
-      },
-    }),
-  ]);
-
-  if (activeRun) {
-    return {
-      ok: false,
-      reason: "duplicate_run",
-      message: "A run of this type is already in progress for your account.",
-      activeRunId: activeRun.id,
-      activeRunStatus: activeRun.status,
-    };
-  }
-
-  if (startCountInWindow >= maxStarts) {
-    const retryAfterSeconds = Math.max(1, Math.ceil(windowMs / 1000));
-    return {
-      ok: false,
-      reason: "rate_limited",
-      message: "Too many run starts in a short period. Please wait and try again.",
-      retryAfterSeconds,
-    };
-  }
-
-  return { ok: true };
 }
 
 export async function requestDiscoveryRunCancellation(params: {
@@ -479,7 +390,7 @@ export async function processAnalyzeRunById(runId: string) {
     return;
   }
 
-  const parsed = analyzeRequestSchema.safeParse(run.requestJson);
+  const parsed = analyzeDiscoveryRequestSchema.safeParse(run.requestJson);
   if (!parsed.success) {
     await markRunFailedById(runId, "Analyze run payload is invalid.");
     return;
@@ -532,7 +443,7 @@ export async function processRecommendRunById(runId: string) {
     return;
   }
 
-  const parsed = recommendRequestSchema.safeParse(run.requestJson);
+  const parsed = recommendDiscoveryRequestSchema.safeParse(run.requestJson);
   if (!parsed.success) {
     await markRunFailedById(runId, "Recommendation run payload is invalid.");
     return;
@@ -609,8 +520,6 @@ export async function launchAnalyzeRun(params: {
         username: params.username,
         waitMs: 10_000,
       });
-      knownArtistsOverride = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
-
       const latestCompletedWeekEnd = await getLatestCompletedWeekEndFromStore({ userAccountId: params.userAccountId });
       const effectiveEnd = Math.min(range.to, Math.floor(Date.now() / 1000));
       const tailFrom = latestCompletedWeekEnd ? Math.max(range.from, latestCompletedWeekEnd + 1) : range.from;
@@ -639,9 +548,9 @@ export async function launchAnalyzeRun(params: {
         }
       }
 
-      if (recentTail.length > 0) {
-        knownArtistsOverride = mergeArtistPlaycounts(knownArtistsOverride, recentTail);
-      }
+      knownArtistsOverride = await getCurrentArtistPlaycounts({
+        userAccountId: params.userAccountId,
+      });
 
       if (coverage.coverage === "full_recent_year" && isRangeWithinRecentYear(range.from, range.to)) {
         weeklyArtistsOverride = await getAggregatedWeeklyArtistsFromStore({
@@ -901,10 +810,7 @@ export async function launchRecommendRun(params: {
 
     const targetUsername = analysisRun.targetLastfmUsername ?? params.targetLastfmUsername ?? params.username;
 
-    const lanePayload = analysisRun.lanesJson as unknown as
-      | Lane[]
-      | { lanes?: Lane[]; summary?: string; notablePatterns?: string[] };
-    const lanes = Array.isArray(lanePayload) ? lanePayload : (lanePayload.lanes ?? []);
+    const { lanes } = decodeAnalysisLanesPayload(analysisRun.lanesJson);
     const selectedLane = lanes.find((lane) => lane.id === params.laneId);
 
     if (!selectedLane) {
@@ -937,14 +843,9 @@ export async function launchRecommendRun(params: {
         waitMs: 10_000,
       });
       knownHistoryCoverage = coverage.coverage;
-      knownArtists = await getKnownArtistsFromWeeklyRollup({ userAccountId: params.userAccountId });
-
-      const recentTail = await getRecentTailArtistCountsFromStore({
+      knownArtists = await getCurrentArtistPlaycounts({
         userAccountId: params.userAccountId,
       });
-      if (recentTail.length > 0) {
-        knownArtists = mergeArtistPlaycounts(knownArtists, recentTail);
-      }
     } else {
       knownArtists = await getKnownArtists({ username: targetUsername });
     }
@@ -980,29 +881,17 @@ export async function launchRecommendRun(params: {
         llmRole: "explanations-only",
       };
 
-      await prisma.recommendationRun.deleteMany({
-        where: {
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          userAccountId: params.userAccountId ?? null,
-          targetLastfmUsername: targetUsername,
-        },
-      });
-
-      const recommendationRun = await prisma.recommendationRun.create({
-        data: {
-          visitorSessionId: params.visitorSessionId,
-          userAccountId: params.userAccountId,
-          targetLastfmUsername: targetUsername,
-          analysisRunId: analysisRun.id,
-          selectedLane: selectedLane.id,
-          newOnly: true,
-          resultsJson: {
-            strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
-            recommendations: [],
-            candidates: [],
-            trace: traceJson,
-          } as Prisma.InputJsonValue,
+      const recommendationRun = await replaceRecommendationRun({
+        visitorSessionId: params.visitorSessionId,
+        userAccountId: params.userAccountId,
+        targetLastfmUsername: targetUsername,
+        analysisRunId: analysisRun.id,
+        selectedLane: selectedLane.id,
+        resultsJson: {
+          strategyNote: "No recommendation seeds are available for this lane in the selected analysis window.",
+          recommendations: [],
+          candidates: [],
+          trace: traceJson,
         },
       });
 
@@ -1086,29 +975,17 @@ export async function launchRecommendRun(params: {
 
     await ensureRunStillActive(params.runId);
 
-    await prisma.recommendationRun.deleteMany({
-      where: {
-        analysisRunId: analysisRun.id,
-        selectedLane: selectedLane.id,
-        userAccountId: params.userAccountId ?? null,
-        targetLastfmUsername: targetUsername,
-      },
-    });
-
-    const recommendationRun = await prisma.recommendationRun.create({
-      data: {
-        visitorSessionId: params.visitorSessionId,
-        userAccountId: params.userAccountId,
-        targetLastfmUsername: targetUsername,
-        analysisRunId: analysisRun.id,
-        selectedLane: selectedLane.id,
-        newOnly: true,
-        resultsJson: {
-          strategyNote: recommendationResult.strategyNote,
-          recommendations: recommendationResult.recommendations,
-          candidates: recommendationResult.candidates,
-          trace: traceJson,
-        } as Prisma.InputJsonValue,
+    const recommendationRun = await replaceRecommendationRun({
+      visitorSessionId: params.visitorSessionId,
+      userAccountId: params.userAccountId,
+      targetLastfmUsername: targetUsername,
+      analysisRunId: analysisRun.id,
+      selectedLane: selectedLane.id,
+      resultsJson: {
+        strategyNote: recommendationResult.strategyNote,
+        recommendations: recommendationResult.recommendations,
+        candidates: recommendationResult.candidates,
+        trace: traceJson,
       },
     });
 

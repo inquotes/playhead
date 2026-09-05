@@ -11,6 +11,8 @@
     "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check": "npm run typecheck && npm run lint && npm test",
     "bench:llm": "node scripts/llm-latency-benchmark.mjs",
     "ops:discovery-smoke": "node scripts/discovery-run-smoke-check.mjs",
     "db:generate": "prisma generate",

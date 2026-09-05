@@ -26,17 +26,19 @@
 - Job-level `consecutiveFailures` only increments when a run makes zero progress; runs that process some weeks successfully reset the counter.
 - All internal worker-to-worker route auth uses a single `QUEUE_PROCESS_SECRET` shared secret.
 - Recent-tail freshness is persisted in `UserRecentTailState` + `UserRecentTailArtistCount` (latest snapshot only per user) and merged into known-history/weekly-store reads for self-target runs.
+- `src/server/listening-history/service.ts` owns current playcounts by merging weekly rollups with the persisted recent tail for discovery filtering, save-time baselines, and profile progress.
 - Recent-tail invalid windows now no-op and keep the previous stored snapshot (prevents accidental tail wipe/regression in profile progress counters).
 - Failed recent-tail pulls also preserve the prior snapshot: state is marked `failed` with the error, but stored tail rows and their window metadata remain intact, and analyze falls back to the stored snapshot.
 - The weekly chart list is cached under a single shared entry (30 min TTL) for both aggregate and latest-boundary reads; the latest boundary is the max week end, independent of Last.fm's list ordering.
 - Pull recency telemetry is persisted in `UserDataPullLog` for both weekly backfill and recent-tail pulls; profile "Data Last Updated" reads from this table.
 - Profile supports a manual refresh action (`POST /api/profile/update-now`) that refreshes recent-tail snapshot immediately and kicks weekly backfill progression.
 - Each lane includes compact `LaneContext` data: representative/member artists, tags, and bounded `similarHints` for warm-start recommendation expansion.
+- Public artist profiles and similar-artist neighborhoods use artist-scoped cache entries shared across users; cache hits remain read-only.
 - Recommend step reuses lane context from `AnalysisRun` and does not rebuild the full listening snapshot.
 - Recommend step fetches broad known history (library-first, cached), filters with the rule: exclude artists with `>= 10` known plays, allow `< 10`.
 - Recommend self-target runs now wait briefly (up to ~10s) for recent-year weekly history coverage and then filter from rollup; if still partial, run proceeds with best-available history and returns a user warning.
 - Recommendation card copy is now playlist-editor style (`blurb`) with optional Last.fm top-album suggestion (`recommendedAlbum`); deterministic ranking remains unchanged.
-- Recommendation persistence is lane-scoped: one run per lane per analysis; refresh replaces prior lane run.
+- Recommendation persistence is lane-scoped and database-enforced: one run per lane per analysis; refresh atomically updates the prior lane result and preserves its identity.
 - Recommendation execution short-circuits for empty seed lanes and for no-selected-candidate cases to avoid unnecessary long-running calls.
 
 ## Account + History UX

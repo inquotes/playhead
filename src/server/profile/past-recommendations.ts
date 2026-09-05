@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/db";
+import { decodeAnalysisLanesPayload, decodeRecommendationResults } from "@/server/discovery/payloads";
 
 export type PastRecommendationItem = {
   analysisRunId: string;
@@ -74,11 +75,8 @@ export async function getPastRecommendationsPage(params: {
   const hasMore = rows.length > boundedLimit;
   const pageRows = hasMore ? rows.slice(0, boundedLimit) : rows;
   const items: PastRecommendationItem[] = pageRows.map((analysis) => {
-    const payload = analysis.lanesJson as
-      | { lanes?: Array<{ id?: string; name?: string }> }
-      | Array<{ id?: string; name?: string }>;
-    const lanes = Array.isArray(payload) ? payload : (Array.isArray(payload?.lanes) ? payload.lanes : []);
-    const laneNameById = new Map(lanes.map((lane) => [String(lane.id ?? ""), lane.name ?? "Saved lane"]));
+    const { lanes } = decodeAnalysisLanesPayload(analysis.lanesJson);
+    const laneNameById = new Map(lanes.map((lane) => [lane.id, lane.name]));
 
     return {
       analysisRunId: analysis.id,
@@ -87,8 +85,8 @@ export async function getPastRecommendationsPage(params: {
       rangeEnd: analysis.rangeEnd,
       laneCount: lanes.length,
       recommendations: analysis.recommendationRuns.map((recommendation) => {
-        const results = recommendation.resultsJson as { recommendations?: unknown[] };
-        const recommendationCount = Array.isArray(results?.recommendations) ? results.recommendations.length : 0;
+        const results = decodeRecommendationResults(recommendation.resultsJson);
+        const recommendationCount = results.recommendations.length;
         return {
           id: recommendation.id,
           selectedLane: recommendation.selectedLane,

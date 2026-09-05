@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { Prisma } from "@prisma/client";
+import { normalizeArtistName } from "@/lib/artists";
 import {
   getArtistInfo,
   getLibraryArtists,
@@ -47,9 +48,7 @@ type ParsedTopAlbum = {
   playcount: number;
 };
 
-export function normalizeArtistName(value: string): string {
-  return value.trim().toLowerCase();
-}
+export { normalizeArtistName } from "@/lib/artists";
 
 export function toNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -71,13 +70,6 @@ async function readThroughCache<T>(options: CacheOptions, loader: () => Promise<
 
   const cached = await prisma.lastfmApiCache.findUnique({ where: { cacheKey } });
   if (cached && cached.expiresAt > now) {
-    await prisma.lastfmApiCache.update({
-      where: { cacheKey },
-      data: {
-        hitCount: { increment: 1 },
-        lastAccessedAt: now,
-      },
-    });
     return cached.dataJson as T;
   }
 
@@ -326,19 +318,18 @@ export async function getLatestWeeklyChartBoundary(params: {
 
 export async function getArtistProfile(params: {
   artistName: string;
-  username: string;
 }): Promise<ParsedArtistInfo> {
   const artistName = params.artistName.trim();
-  const scope = params.username.trim().toLowerCase();
+  const scope = `artist:${normalizeArtistName(artistName)}`;
 
   const raw = await readThroughCache(
     {
       scope,
       method: "artist.getInfo",
-      params: { artist: artistName, user: params.username },
+      params: { artist: artistName },
       ttlSeconds: 60 * 60 * 24 * 14,
     },
-    () => getArtistInfo({ artist: artistName, user: params.username, autocorrect: 1 }),
+    () => getArtistInfo({ artist: artistName, autocorrect: 1 }),
   );
 
   return parseArtistInfoPayload(raw);
@@ -346,10 +337,9 @@ export async function getArtistProfile(params: {
 
 export async function getSimilarArtistProfiles(params: {
   artistName: string;
-  username: string;
   limit: number;
 }): Promise<ParsedSimilarArtist[]> {
-  const scope = params.username.trim().toLowerCase();
+  const scope = `artist:${normalizeArtistName(params.artistName)}`;
   const raw = await readThroughCache(
     {
       scope,

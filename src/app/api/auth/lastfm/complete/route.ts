@@ -77,7 +77,7 @@ export async function POST(request: Request) {
   try {
     const rawToken = await readCompletionToken(request);
     return finalizeAuthCompletion(request, rawToken);
-  } catch (error) {
+  } catch {
     return redirectToError(request, "auth_failed");
   }
 }

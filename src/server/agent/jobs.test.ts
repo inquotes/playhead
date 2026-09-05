@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeArtistPlaycounts } from "./jobs";
+import { mergeArtistPlaycounts } from "@/lib/artists";
 
 describe("mergeArtistPlaycounts", () => {
   it("merges disjoint arrays", () => {

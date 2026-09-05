@@ -1,22 +1,14 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
-import { z } from "zod";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { recommendDiscoveryRequestSchema } from "@/lib/discovery-contracts";
 import { prisma } from "@/server/db";
-import { guardDiscoveryRunStart } from "@/server/agent/jobs";
-import type { Lane } from "@/server/discovery/types";
+import { enqueueDiscoveryRun } from "@/server/agent/enqueue";
+import { decodeAnalysisLanesPayload } from "@/server/discovery/payloads";
 import { getCurrentUserAccount } from "@/server/auth";
 import { attachVisitorCookie, getOrCreateVisitorSession } from "@/server/session";
 
-const requestSchema = z.object({
-  analysisRunId: z.string().min(1),
-  laneId: z.string().min(1),
-  limit: z.number().int().min(1).max(8).default(4),
-});
-
 export async function POST(request: Request) {
   try {
-    const payload = requestSchema.parse(await request.json());
+    const payload = recommendDiscoveryRequestSchema.parse(await request.json());
     const context = await getOrCreateVisitorSession();
     const visitorSessionId = context.sessionId;
     const userAccount = await getCurrentUserAccount();
@@ -35,10 +27,7 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const lanePayload = analysisRun.lanesJson as unknown as
-      | Lane[]
-      | { lanes?: Lane[]; summary?: string; notablePatterns?: string[] };
-    const lanes = Array.isArray(lanePayload) ? lanePayload : (lanePayload.lanes ?? []);
+    const { lanes } = decodeAnalysisLanesPayload(analysisRun.lanesJson);
     const selectedLane = lanes.find((lane) => lane.id === payload.laneId);
 
     if (!selectedLane) {
@@ -46,68 +35,36 @@ export async function POST(request: Request) {
       return attachVisitorCookie(response, context);
     }
 
-    const startGuard = await guardDiscoveryRunStart({
+    const targetUsername = analysisRun.targetLastfmUsername ?? userAccount.lastfmUsername;
+    const queued = await enqueueDiscoveryRun({
+      visitorSessionId,
       userAccountId: userAccount.id,
+      targetLastfmUsername: targetUsername,
       mode: "recommend",
+      request: payload,
     });
 
-    if (!startGuard.ok) {
+    if (!queued.ok) {
       const response = NextResponse.json(
         {
           ok: false,
-          reason: startGuard.reason,
-          message: startGuard.message,
-          activeRunId: startGuard.activeRunId,
-          activeRunStatus: startGuard.activeRunStatus,
-          retryAfterSeconds: startGuard.retryAfterSeconds,
+          reason: queued.reason,
+          message: queued.message,
+          activeRunId: queued.activeRunId,
+          activeRunStatus: queued.activeRunStatus,
+          retryAfterSeconds: queued.retryAfterSeconds,
         },
-        { status: startGuard.reason === "rate_limited" ? 429 : 409 },
+        { status: queued.reason === "rate_limited" ? 429 : 409 },
       );
       return attachVisitorCookie(response, context);
     }
 
-    const timeoutMs = Number(process.env.PIPELINE_TIMEOUT_MS ?? 180_000);
-    const targetUsername = analysisRun.targetLastfmUsername ?? userAccount.lastfmUsername;
-
-    const run = await prisma.agentRun.create({
-      data: {
-        visitorSessionId,
-        userAccountId: userAccount.id,
-        targetLastfmUsername: targetUsername,
-        mode: "recommend",
-        status: "queued",
-        requestJson: payload as Prisma.InputJsonValue,
-        maxToolCalls: 0,
-        timeoutMs,
-      },
-    });
-
-    const { env } = getCloudflareContext();
-    try {
-      await (env as unknown as { RECOMMEND_JOBS: Queue }).RECOMMEND_JOBS.send({
-        runId: run.id,
-        mode: "recommend",
-        enqueuedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      await prisma.agentRun.update({
-        where: { id: run.id },
-        data: {
-          status: "failed",
-          errorMessage: error instanceof Error ? error.message : "Failed to queue recommendation run.",
-          completedAt: new Date(),
-          terminationReason: "error",
-        },
-      });
-      throw error;
-    }
-
     const response = NextResponse.json({
       ok: true,
-      runId: run.id,
+      runId: queued.run.id,
       mode: "recommend",
       maxToolCalls: 0,
-      timeoutMs,
+      timeoutMs: queued.run.timeoutMs,
     });
     return attachVisitorCookie(response, context);
   } catch (error) {
